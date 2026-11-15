@@ -13,6 +13,10 @@
 // under a brighter dusk. Put your PNG
 // or JPEG screenshots in screenshots/ (the first by name is the cover) and run it.
 //
+// v6 in short: the round runs on a live clock (stall out and it is a loss), wardens who go
+// down stay down until the round turns over so clearing the crew wins the round, and the yard
+// shop sells the guns — the COIL-9 SMG and the scoped Longsight are bought, never issued.
+//
 // The dossier is assembled by two deterministic runs (out and out2) whose trees must diff clean.
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
