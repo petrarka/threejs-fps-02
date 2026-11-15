@@ -1,5 +1,9 @@
 // The arsenal: three hitscan weapons sharing one view-model rig, one muzzle flash and
 // one heat model. Each weapon owns its own numbers; main.js owns the ray and the damage.
+// Every weapon fires a fixed recoil PATTERN (not just a kick size): a climbing ladder of
+// pitch/yaw steps the muzzle traces while the trigger stays down, so each gun draws its
+// own shape on the wall — the rifle climbs and weaves, the pistol steps, the Longsight
+// slams once.
 //   1 EMBERETTE  pistol    — semi-auto, cheap and honest
 //   2 KILN-R     rifle     — full-auto workhorse, sprays wide when hot
 //   3 LONGSIGHT  marksman  — slow, near-perfect, hits like a kiln door (100 to the torso)
@@ -7,6 +11,20 @@
 // grow with it, so short bursts beat a held trigger, and standing still beats running.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
+
+// [pitch, yaw] per consecutive shot; the ladder holds on its last step while the
+// trigger stays held. Yaw signs weave left-right — the rifle's signature.
+const PATTERN_PISTOL = [
+  [0.015, 0.003], [0.016, -0.004], [0.017, 0.005], [0.018, -0.005],
+  [0.019, 0.006], [0.02, -0.006], [0.02, 0.007], [0.021, -0.007],
+];
+const PATTERN_RIFLE = [
+  [0.009, 0.001], [0.011, -0.002], [0.012, 0.003], [0.013, -0.003],
+  [0.014, 0.004], [0.015, -0.004], [0.016, 0.005], [0.016, -0.005],
+  [0.017, 0.006], [0.018, -0.006], [0.018, 0.007], [0.019, -0.007],
+  [0.02, 0.007], [0.02, -0.008], [0.021, 0.008], [0.021, -0.008],
+];
+const PATTERN_MARKSMAN = [[0.05, 0.006]];
 
 const MOVE_REFERENCE = 5.2;
 const HEAT_PER_ROUND = 0.16;
@@ -19,21 +37,21 @@ const WEAPONS = [
     key: 'pistol', name: 'EMBERETTE',
     damage: 34, magSize: 12, reserve: 36, fireGap: 0.22, reloadTime: 1.4,
     spreadStill: 0.0018, spreadMoving: 0.02, spreadHeat: 0.012,
-    kick: 0.05, recoilPitch: 0.014, automatic: false,
+    kick: 0.05, recoilPitch: 0.014, automatic: false, pattern: PATTERN_PISTOL,
     model: { receiver: [0.06, 0.09, 0.24], barrel: [0.035, 0.035, 0.18], barrelZ: -0.2, grip: true },
   },
   {
     key: 'rifle', name: 'KILN-R',
     damage: 34, magSize: 30, reserve: 90, fireGap: 0.096, reloadTime: 1.9,
     spreadStill: 0.0022, spreadMoving: 0.028, spreadHeat: 0.03,
-    kick: 0.055, recoilPitch: 0.011, automatic: true,
+    kick: 0.055, recoilPitch: 0.011, automatic: true, pattern: PATTERN_RIFLE,
     model: { receiver: [0.09, 0.1, 0.42], barrel: [0.045, 0.045, 0.4], barrelZ: -0.38, stock: true },
   },
   {
     key: 'marksman', name: 'LONGSIGHT',
     damage: 100, magSize: 5, reserve: 15, fireGap: 0.95, reloadTime: 2.6,
     spreadStill: 0.0006, spreadMoving: 0.05, spreadHeat: 0.004,
-    kick: 0.12, recoilPitch: 0.05, automatic: false,
+    kick: 0.12, recoilPitch: 0.05, automatic: false, pattern: PATTERN_MARKSMAN,
     model: { receiver: [0.07, 0.11, 0.6], barrel: [0.04, 0.04, 0.62], barrelZ: -0.58, scope: true },
   },
 ];
@@ -89,7 +107,7 @@ export function createWeapon(camera) {
 
   // Per-weapon ammo survives switching; heat and cooldowns are shared across the rig.
   const ammo = WEAPONS.map((w) => ({ mag: w.magSize, reserve: w.reserve }));
-  const state = { index: 1, cooldown: 0, reloadLeft: 0, flash: 0, kick: 0, heat: 0, swapLeft: 0 };
+  const state = { index: 1, cooldown: 0, reloadLeft: 0, flash: 0, kick: 0, heat: 0, swapLeft: 0, patternIndex: 0 };
 
   function spec() {
     return WEAPONS[state.index];
@@ -103,6 +121,7 @@ export function createWeapon(camera) {
     state.reloadLeft = 0;
     state.heat = 0;
     state.swapLeft = SWAP_TIME;
+    state.patternIndex = 0;
     for (let i = 0; i < models.length; i += 1) models[i].visible = i === index;
   }
 
@@ -167,6 +186,14 @@ export function createWeapon(camera) {
       state.flash = MUZZLE_TIME;
       state.kick = spec().kick;
       state.heat = Math.min(1.6, state.heat + HEAT_PER_ROUND);
+      state.patternIndex += 1;
+    },
+    // The recoil step for the shot that just left: the weapon's pattern ladder,
+    // scaled by a little seeded jitter. main.js feeds this to player.recoil.
+    recoilKick(rng) {
+      const ladder = spec().pattern;
+      const step = ladder[Math.min(state.patternIndex - 1, ladder.length - 1)];
+      return [step[0] * (0.85 + rng() * 0.3), step[1] * (0.7 + rng() * 0.6)];
     },
     takeRound() {
       const box = ammo[state.index];

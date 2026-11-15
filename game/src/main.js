@@ -11,7 +11,7 @@ import { createTargets } from './targets.js';
 import { createBots } from './bots.js';
 import { createBomb } from './bomb.js';
 import { createEconomy } from './economy.js';
-import { createRounds } from './rounds.js';
+import { createRounds, ROUNDS_TO_WIN } from './rounds.js';
 import { createRadar } from './radar.js';
 import { createHud } from './hud.js';
 import * as sound from './sound.js';
@@ -92,7 +92,7 @@ hud.setWeapon(weapon.name());
 hud.setHp(hp);
 hud.setScore(0);
 hud.setMoney(economy.state.money);
-hud.setArmor(economy.state.armor);
+hud.setArmor(economy.state.armor, economy.state.helm);
 hud.setNades(economy.state.nades);
 hud.onPlay(() => {
   if (shot) return;
@@ -120,7 +120,7 @@ function restart() {
   hud.setRound('R1 · 0–0');
   hud.hideBoard();
   hud.setMoney(economy.state.money);
-  hud.setArmor(economy.state.armor);
+  hud.setArmor(economy.state.armor, economy.state.helm);
   hud.setNades(economy.state.nades);
   hud.hideShop();
   hud.setAmmo(weapon.ammo[weapon.state.index].mag, weapon.ammo[weapon.state.index].reserve);
@@ -149,7 +149,7 @@ function pushBoard() {
 function beginFreeze() {
   economy.state.shopOpen = true;
   refreshShop();
-  const point = rounds.state.wins === 2 || rounds.state.losses === 2;
+  const point = rounds.state.wins === ROUNDS_TO_WIN - 1 || rounds.state.losses === ROUNDS_TO_WIN - 1;
   hud.setPhase(point ? `ROUND ${rounds.state.round} · MATCH POINT` : `ROUND ${rounds.state.round} · BUY TIME`);
   hud.setRound(roundText());
   pushBoard();
@@ -174,7 +174,7 @@ function resetRoundWorld() {
   hud.setUse(null, null);
   hud.setWeapon(weapon.name());
   hud.setAmmo(weapon.ammo[weapon.state.index].mag, weapon.ammo[weapon.state.index].reserve);
-  hud.setArmor(economy.state.armor);
+  hud.setArmor(economy.state.armor, economy.state.helm);
   hud.setNades(economy.state.nades);
   hud.clearKillfeed();
 }
@@ -207,7 +207,7 @@ function tryBuy(slotIndex) {
   if (ok) {
     sound.buy();
     hud.setMoney(economy.state.money);
-    hud.setArmor(economy.state.armor);
+    hud.setArmor(economy.state.armor, economy.state.helm);
     hud.setNades(economy.state.nades);
   }
   refreshShop();
@@ -312,7 +312,9 @@ function shoot(spread) {
   }
   weapon.pullTrigger();
   sound.shoot();
-  player.recoil(weapon.recoilPitch() * (0.8 + random() * 0.4), (random() * 2 - 1) * weapon.recoilPitch() * 0.35);
+  bots.hear(body.position.x, body.position.z, 24);
+  const kick = weapon.recoilKick(random);
+  player.recoil(kick[0], kick[1]);
   hud.setAmmo(weapon.ammo[weapon.state.index].mag, weapon.ammo[weapon.state.index].reserve);
   return true;
 }
@@ -346,15 +348,25 @@ function endRound(mode) {
   }
 }
 
-function onPlayerHit(amount) {
+function onPlayerHit(amount, part, shooter) {
   if (cleared || shot === 'end' || shot === 'plant') return;
   if (!shot && rounds.state.phase !== 'live') return;
-  hp -= economy.absorb(amount);
+  const absorbed = economy.absorb(amount, part);
+  if (shot) {
+    // Shot renders must never die mid-frame: the hits show on the HUD, the round
+    // never ends. Two deterministic runs still produce identical frames.
+    hp = Math.max(5, hp - absorbed);
+    hud.setHp(hp);
+    hud.setArmor(economy.state.armor, economy.state.helm);
+    return;
+  }
+  hp -= absorbed;
   hud.setHp(hp);
-  hud.setArmor(economy.state.armor);
+  hud.setArmor(economy.state.armor, economy.state.helm);
   if (hp > 0) sound.hurt();
   if (hp <= 0) {
-    hud.pushKill('WARDEN', 'YOU');
+    const label = (shooter || 'GUARD').toUpperCase() + (part === 'head' ? ' · HEADSHOT' : '');
+    hud.pushKill(label, 'YOU');
     endRound('dead');
   }
 }
@@ -378,7 +390,7 @@ function step(dt) {
       const count = Math.ceil(rounds.state.clock);
       if (count !== lastCount) {
         lastCount = count;
-        const point = rounds.state.wins === 2 || rounds.state.losses === 2;
+        const point = rounds.state.wins === ROUNDS_TO_WIN - 1 || rounds.state.losses === ROUNDS_TO_WIN - 1;
         hud.setPhase(point ? `MATCH POINT · BUY ${count}` : `ROUND ${rounds.state.round} · BUY ${count}`);
         sound.tick();
       }
@@ -389,12 +401,13 @@ function step(dt) {
   economy.step(dt);
   targets.step(dt, elapsed);
   const livePhase = shot || rounds.state.phase === 'live';
-  bots.step(dt, elapsed, body.position, livePhase ? onPlayerHit : null, random);
+  bots.step(dt, elapsed, body, livePhase ? onPlayerHit : null, random);
   const blasts = economy.takeExplosions();
   if (blasts) {
     for (let index = 0; index < blasts.length; index += 1) {
       const at = blasts[index];
       const kills = bots.damageArea(at.x, at.z, economy.NADE_RADIUS, economy.NADE_MAX_DAMAGE);
+      bots.hear(at.x, at.z, 20);
       if (kills > 0) {
         for (let k = 0; k < kills; k += 1) {
           economy.award('kill');
@@ -593,7 +606,7 @@ function runShot(name) {
   hud.setHp(hp);
   hud.setAmmo(weapon.ammo[weapon.state.index].mag, weapon.ammo[weapon.state.index].reserve);
   hud.setMoney(economy.state.money);
-  hud.setArmor(economy.state.armor);
+  hud.setArmor(economy.state.armor, economy.state.helm);
   hud.setNades(economy.state.nades);
   paintTwiceThenReady();
 }

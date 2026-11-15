@@ -1,9 +1,9 @@
-// The match clock: buy time (freeze) -> live round -> intermission. First to three rounds
-// takes the yard. Pure state — main.js owns the world and acts on the transitions this
-// module reports; deterministic shot modes bypass it entirely.
+// The match clock: buy time (freeze) -> live round -> intermission. First to eight
+// rounds takes the yard. Pure state — main.js owns the world and acts on the
+// transitions this module reports; deterministic shot modes bypass it entirely.
 export const FREEZE_SECONDS = 6;
 export const OVER_SECONDS = 3.2;
-export const ROUNDS_TO_WIN = 3;
+export const ROUNDS_TO_WIN = 8;
 
 export function createRounds() {
   const state = {

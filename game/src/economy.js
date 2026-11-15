@@ -1,6 +1,7 @@
-// The purse and the pocket: money for kills and rounds, a four-slot buy menu, and the
+// The purse and the pocket: money for kills and rounds, a five-slot buy menu, and the
 // FIREPOT HE grenade — a lobbed clay pot that bounces once and bursts into a short-radius
-// kilnwash. A clay vest soaks most of what would hit the chest while it lasts.
+// kilnwash. A clay vest soaks most of what would hit the chest while it lasts, and a
+// kiln helm blunts what would have cracked the skull.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
@@ -9,6 +10,7 @@ const AWARDS = { kill: 200, win: 800 };
 // A flat loss award starves a streak; three straight losses should still arm round four.
 const LOSS_STREAK_BONUS = [300, 500, 700];
 const ARMOR_ABSORB = 0.55;      // share of a hit the vest eats while it lasts
+const HELM_HEAD_FACTOR = 0.6;   // a helm leaves 60% of a headshot's sting
 const NADE_MAX = 2;
 const NADE_FUSE = 1.4;          // seconds from the throw to the burst
 const NADE_RADIUS = 5.2;
@@ -25,12 +27,14 @@ export const CATALOG = [
   { key: 'ammo', slot: 2, name: 'AMMO CRATE', price: 300, note: 'top up every reserve' },
   { key: 'he', slot: 3, name: 'FIREPOT HE', price: 400, note: '+1 grenade, throw with G' },
   { key: 'stim', slot: 4, name: 'STIM PACK', price: 500, note: '+60 HP, right now' },
+  { key: 'helm', slot: 5, name: 'KILN HELM', price: 400, note: 'blunts headshots by 40%' },
 ];
 
 export function createEconomy(scene) {
   const state = {
     money: START_MONEY,
     armor: 0,
+    helm: 0,
     nades: 0,
     shopOpen: false,
     lossStreak: 0,
@@ -69,6 +73,7 @@ export function createEconomy(scene) {
   function reset() {
     state.money = START_MONEY;
     state.armor = 0;
+    state.helm = 0;
     state.nades = 0;
     state.shopOpen = false;
     state.lossStreak = 0;
@@ -96,22 +101,26 @@ export function createEconomy(scene) {
     const item = CATALOG.find((entry) => entry.key === key);
     if (!item || state.money < item.price) return false;
     if (key === 'vest' && state.armor >= 100) return false;
+    if (key === 'helm' && state.helm >= 1) return false;
     if (key === 'he' && state.nades >= NADE_MAX) return false;
     if (key === 'stim' && ctx.hp >= ctx.maxHp) return false;
     state.money -= item.price;
     if (key === 'vest') state.armor = 100;
+    else if (key === 'helm') state.helm = 1;
     else if (key === 'he') state.nades += 1;
     else if (key === 'ammo') ctx.refillAmmo();
     else if (key === 'stim') ctx.heal(60);
     return true;
   }
 
-  // Armor first: the vest eats its share, the rest lands on HP. Returns HP damage taken.
-  function absorb(amount) {
-    if (state.armor <= 0) return amount;
-    const soaked = Math.min(state.armor, amount * ARMOR_ABSORB);
+  // A helm softens a skull hit first; then armor: the vest eats its share, the rest
+  // lands on HP. Returns HP damage taken.
+  function absorb(amount, part) {
+    let left = part === 'head' && state.helm ? amount * HELM_HEAD_FACTOR : amount;
+    if (state.armor <= 0) return Math.round(left);
+    const soaked = Math.min(state.armor, left * ARMOR_ABSORB);
     state.armor -= soaked;
-    return amount - soaked;
+    return Math.round(left - soaked);
   }
 
   function throwNade(origin, dir) {

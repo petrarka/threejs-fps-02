@@ -120,11 +120,13 @@ export function createHud() {
       moneyValue.textContent = `$${value}`;
       money.classList.toggle('flush', value < 500);
     },
-    setArmor(value) {
-      if (value === lastArmor) return;
-      lastArmor = value;
-      armor.hidden = value <= 0;
-      armor.textContent = `VEST ${Math.max(0, Math.round(value))}`;
+    setArmor(value, helm = 0) {
+      const key = `${Math.round(value)}|${helm}`;
+      if (key === lastArmor) return;
+      lastArmor = key;
+      armor.hidden = value <= 0 && !helm;
+      const tag = helm ? ' · HELM' : '';
+      armor.textContent = value > 0 ? `VEST ${Math.max(0, Math.round(value))}${tag}` : `HELM${tag ? ' ON' : ''}`;
     },
     setNades(value) {
       if (value === lastNades) return;
@@ -132,7 +134,7 @@ export function createHud() {
       nades.hidden = value <= 0;
       nades.textContent = `HE ×${value}`;
     },
-    // The buy menu is keyboard-driven (1-4 buy, B closes); main.js passes the full state
+    // The buy menu is keyboard-driven (1-5 buy, B closes); main.js passes the full state
     // after every change so affordability and stock lines stay honest.
     showShop(economyState, hpNow, maxHp, catalog) {
       shop.hidden = false;
@@ -151,6 +153,9 @@ export function createHud() {
         } else if (item.key === 'stim') {
           owned = hpNow >= maxHp;
           stock = `${hpNow} HP`;
+        } else if (item.key === 'helm') {
+          owned = economyState.helm >= 1;
+          stock = owned ? 'WORN' : 'on the shelf';
         }
         row.classList.toggle('poor', !afford && !owned);
         row.classList.toggle('owned', owned);
