@@ -12,8 +12,12 @@ eight) won by elimination or the Ember objective (plant/defuse), money between
 rounds, a five-slot buy menu (vest, helm, ammo, HE, stim), three weapons with
 fixed per-weapon recoil patterns and a grenade, recoil/spread heat model,
 headshot bonus, capsule hitboxes, and a nine-guard crew that walks A* routes,
-hears gunfire, investigates noise, converges on the charge and answers with
-true hitscan rounds (head sphere + body capsule tests, tracers). You never run
+hears gunfire through hearing.js (radius reach with honest wall muffling — an
+ear-to-source raycast, so a kiln between you and a guard halves the noise),
+investigates noise, converges on the charge and answers with
+true hitscan rounds (head sphere + body capsule tests, tracers). The FIREPOT
+HE lives in its own grenade.js — throw arc, clay bounce, fuse and kilnwash
+burst. You never run
 alone: three crew mates share the same A* grid and physics — Tally entries,
 Mason carries and plants the Ember on a quiet lane, Brack anchors your back —
 they see, fight and die beside you, ring the ticking charge and show their

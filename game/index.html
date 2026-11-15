@@ -286,6 +286,31 @@
     color: var(--ink);
   }
   .brow .bname { color: var(--muted); }
+  #board-roster { margin-top: 6px; border-top: 1px solid color-mix(in srgb, var(--ink) 16%, transparent); padding-top: 5px; }
+  #board-roster .rrow {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    margin-top: 2px;
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+  }
+  #board-roster .rrow.down { color: color-mix(in srgb, var(--muted) 45%, transparent); text-decoration: line-through; }
+
+  /* One quiet line of key hints, always on screen while the yard runs. */
+  #hints {
+    position: fixed;
+    left: 50%;
+    bottom: 20px;
+    transform: translateX(-50%);
+    color: color-mix(in srgb, var(--muted) 72%, transparent);
+    font-family: var(--font-readout);
+    font-size: 10.5px;
+    letter-spacing: 0.16em;
+    pointer-events: none;
+    white-space: nowrap;
+  }
 
   #use {
     position: fixed;
@@ -468,8 +493,10 @@
     <div class="brow"><span class="bname">YOU</span><span id="board-you"></span></div>
     <div class="brow"><span class="bname">WARDENS</span><span id="board-foes"></span></div>
     <div class="brow"><span class="bname">CREW</span><span id="board-mates"></span></div>
+    <div id="board-roster"></div>
   </div>
   <canvas id="radar" width="148" height="148"></canvas>
+  <div id="hints">G FRAG · E PLANT · B SUPPLY · M MUTE</div>
   <div id="killfeed"></div>
   <div id="vignette"></div>
   <div id="use" hidden><span id="use-label">PLANTING</span><span id="use-track"><i id="use-fill"></i></span></div>

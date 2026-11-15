@@ -67,7 +67,14 @@ let liveNow = false;
 const mates = createMates(scene, world, bots, nav, { killfeed: (k, v) => hud.pushKill(k, v) });
 bots.setMates({
   items: mates.items,
-  hitBy(item, amount, part, name) { if (liveNow) mates.hitBy(item, amount, part, name); },
+  hitBy(item, amount, part, name) {
+    if (!liveNow) return;
+    const wasAlive = item.alive;
+    mates.hitBy(item, amount, part, name);
+    const stat = wardenStat(name);
+    if (wasAlive) stat.dmg += amount;
+    if (wasAlive && !item.alive) stat.kills += 1;
+  },
 });
 const player = createPlayer(world.colliders);
 const input = createInput(renderer.domElement, onLockChange);
@@ -84,8 +91,18 @@ const direction = new THREE.Vector3();
 const body = player.state;
 const markerHoldMs = shot ? 4000 : 90;
 const prevKeys = new Set();
+
+// Match stat sheet: who hit whom for how much, kept per match for the kick-table.
+const wardenStats = {};
+function wardenStat(name) {
+  const key = name || 'GUARD';
+  if (!wardenStats[key]) wardenStats[key] = { kills: 0, dmg: 0 };
+  return wardenStats[key];
+}
 let score = 0;
 let frags = 0;
+let deaths = 0;
+let dmgDealt = 0;
 let elapsed = 0;
 let hp = 100;
 let cleared = false;
@@ -122,6 +139,9 @@ function restart() {
   cleared = false;
   score = 0;
   frags = 0;
+  deaths = 0;
+  dmgDealt = 0;
+  for (const key of Object.keys(wardenStats)) delete wardenStats[key];
   hp = 100;
   elapsed = 0;
   targets.reset();
@@ -153,7 +173,8 @@ function roundText() {
   return `R${rounds.state.round} · ${rounds.state.wins}–${rounds.state.losses}`;
 }
 
-// The kick-table snapshot: score, your line, warden headcount, the crew's K/D/DMG.
+// The kick-table snapshot: score, your K/D/DMG line, warden headcount, the crew's
+// K/D/DMG, and one roster row per guard with his own K and damage dealt.
 function matesLine() {
   const parts = [];
   for (const m of mates.items) parts.push(`${m.name.toUpperCase()} ${m.kills}/${m.deaths}/${m.dmg}`);
@@ -162,13 +183,19 @@ function matesLine() {
 
 function pushBoard() {
   let up = 0;
-  for (const item of bots.items) if (item.alive) up += 1;
+  const roster = [];
+  for (const item of bots.items) {
+    if (item.alive) up += 1;
+    const stat = wardenStats[item.route.name] || { kills: 0, dmg: 0 };
+    roster.push(`${item.route.name.toUpperCase()}  K${stat.kills} · DMG ${stat.dmg} · ${item.alive ? 'UP' : 'DOWN'}`);
+  }
   hud.showBoard(
     `THE YARD · R${rounds.state.round}`,
     `${rounds.state.wins}–${rounds.state.losses}`,
-    `${frags} frags · ${hp} HP · $${economy.state.money}`,
+    `K ${frags} · D ${deaths} · DMG ${dmgDealt}`,
     `${up}/${bots.items.length} up`,
     matesLine(),
+    roster,
   );
 }
 
@@ -325,6 +352,7 @@ function shoot(spread) {
     const killed = isBot
       ? bots.damage(hit.object, amount)
       : targets.damage(hit.object, amount);
+    if (isBot) dmgDealt += amount;
     score += killed ? 100 : 10;
     if (killed) {
       economy.award('kill');
@@ -357,6 +385,7 @@ function shoot(spread) {
 function endRound(mode) {
   if (cleared) return;
   cleared = true;
+  if (mode === 'dead') deaths += 1;
   economy.state.shopOpen = false;
   hud.hideShop();
   hud.setClock(null);
@@ -387,6 +416,7 @@ function endRound(mode) {
 function onPlayerHit(amount, part, shooter) {
   if (cleared || shot === 'end' || shot === 'plant') return;
   if (!shot && rounds.state.phase !== 'live') return;
+  if (shooter) wardenStat(shooter).dmg += amount;
   const absorbed = economy.absorb(amount, part);
   if (shot) {
     // Shot renders must never die mid-frame: the hits show on the HUD, the round
@@ -401,6 +431,7 @@ function onPlayerHit(amount, part, shooter) {
   hud.setArmor(economy.state.armor, economy.state.helm);
   if (hp > 0) sound.hurt();
   if (hp <= 0) {
+    if (shooter) wardenStat(shooter).kills += 1;
     const label = (shooter || 'GUARD').toUpperCase() + (part === 'head' ? ' · HEADSHOT' : '');
     hud.pushKill(label, 'YOU');
     endRound('dead');
@@ -451,15 +482,16 @@ function step(dt) {
   if (blasts) {
     for (let index = 0; index < blasts.length; index += 1) {
       const at = blasts[index];
-      const kills = bots.damageArea(at.x, at.z, economy.NADE_RADIUS, economy.NADE_MAX_DAMAGE);
+      const blast = bots.damageArea(at.x, at.z, economy.NADE_RADIUS, economy.NADE_MAX_DAMAGE);
       bots.hear(at.x, at.z, 20);
-      if (kills > 0) {
-        for (let k = 0; k < kills; k += 1) {
+      if (blast.kills > 0) {
+        for (let k = 0; k < blast.kills; k += 1) {
           economy.award('kill');
           hud.pushKill('YOU', 'WARDEN');
         }
-        frags += kills;
-        score += kills * 100;
+        frags += blast.kills;
+        dmgDealt += blast.damage;
+        score += blast.kills * 100;
         hud.setScore(score);
         hud.setMoney(economy.state.money);
         hud.hitMarker(true, markerHoldMs);

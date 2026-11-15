@@ -1,9 +1,9 @@
-// The purse and the pocket: money for kills and rounds, a five-slot buy menu, and the
-// FIREPOT HE grenade — a lobbed clay pot that bounces once and bursts into a short-radius
-// kilnwash. A clay vest soaks most of what would hit the chest while it lasts, and a
-// kiln helm blunts what would have cracked the skull.
-import * as THREE from 'three';
-import { PALETTE } from './palette.js';
+// The purse: money for kills and rounds, a seven-slot buy menu, a clay vest that
+// soaks most of what would hit the chest while it lasts, and a kiln helm that
+// blunts what would have cracked the skull. The FIREPOT HE itself — the throw,
+// the fuse, the burst — lives in grenade.js; this module only sells and counts
+// the pots (state.nades reads straight off the grenade bag).
+import { createGrenades } from './grenade.js';
 
 const START_MONEY = 800;
 const AWARDS = { kill: 200, win: 800 };
@@ -11,16 +11,6 @@ const AWARDS = { kill: 200, win: 800 };
 const LOSS_STREAK_BONUS = [300, 500, 700];
 const ARMOR_ABSORB = 0.55;      // share of a hit the vest eats while it lasts
 const HELM_HEAD_FACTOR = 0.6;   // a helm leaves 60% of a headshot's sting
-const NADE_MAX = 2;
-const NADE_FUSE = 1.4;          // seconds from the throw to the burst
-const NADE_RADIUS = 5.2;
-const NADE_MAX_DAMAGE = 110;    // a pot at your feet is lethal; the rim of the wash is not
-const NADE_THROW = 14.5;
-const NADE_LOB = 3.2;
-const GRAVITY = 22;
-const BOUNCE = 0.42;
-const ROLL = 0.72;
-const BURST_SECONDS = 0.32;
 
 export const CATALOG = [
   { key: 'vest', slot: 1, name: 'CLAY VEST', price: 650, note: 'soaks 55% of hits while it lasts' },
@@ -33,59 +23,29 @@ export const CATALOG = [
 ];
 
 export function createEconomy(scene) {
+  const grenades = createGrenades(scene);
+
   const state = {
     money: START_MONEY,
     armor: 0,
     helm: 0,
-    nades: 0,
     shopOpen: false,
     lossStreak: 0,
   };
-
-  // One grenade in flight at a time is plenty for a yard this size.
-  const nade = {
-    active: false,
-    fuse: 0,
-    pos: new THREE.Vector3(),
-    vel: new THREE.Vector3(),
-  };
-  const mesh = new THREE.Mesh(
-    new THREE.SphereGeometry(0.09, 10, 8),
-    new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.accent), roughness: 0.5, emissive: new THREE.Color(PALETTE.accent), emissiveIntensity: 0.35 }),
-  );
-  mesh.visible = false;
-  mesh.castShadow = true;
-  scene.add(mesh);
-
-  const burst = {
-    left: 0,
-    pos: new THREE.Vector3(),
-  };
-  const burstMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(1, 18, 12),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(PALETTE.accent), transparent: true, opacity: 0.55, depthWrite: false }),
-  );
-  burstMesh.visible = false;
-  scene.add(burstMesh);
-  const burstLight = new THREE.PointLight(new THREE.Color(PALETTE.accent), 0, 18);
-  scene.add(burstLight);
-
-  const explosions = []; // drained by main.js each step, then applied to bots/player
+  // The purse keeps counting pots in the old field so the HUD and the shop stock
+  // lines never had to learn a new name; the bag itself belongs to grenade.js.
+  Object.defineProperty(state, 'nades', {
+    get() { return grenades.state.count; },
+    set(value) { grenades.state.count = value; },
+  });
 
   function reset() {
     state.money = START_MONEY;
     state.armor = 0;
     state.helm = 0;
-    state.nades = 0;
     state.shopOpen = false;
     state.lossStreak = 0;
-    nade.active = false;
-    nade.fuse = 0;
-    mesh.visible = false;
-    burst.left = 0;
-    burstMesh.visible = false;
-    burstLight.intensity = 0;
-    explosions.length = 0;
+    grenades.reset();
   }
 
   function award(kind) {
@@ -105,7 +65,7 @@ export function createEconomy(scene) {
     if (!item || state.money < item.price) return false;
     if (key === 'vest' && state.armor >= 100) return false;
     if (key === 'helm' && state.helm >= 1) return false;
-    if (key === 'he' && state.nades >= NADE_MAX) return false;
+    if (key === 'he' && state.nades >= grenades.NADE_MAX) return false;
     if (key === 'stim' && ctx.hp >= ctx.maxHp) return false;
     if (item.gun !== undefined && ctx.hasWeapon(item.gun)) return false;
     state.money -= item.price;
@@ -128,77 +88,19 @@ export function createEconomy(scene) {
     return Math.round(left - soaked);
   }
 
+  // The throw itself is the grenade module's business; the purse only pays the pot.
   function throwNade(origin, dir) {
-    if (state.nades <= 0 || nade.active || burst.left > 0) return false;
-    state.nades -= 1;
-    nade.active = true;
-    nade.fuse = NADE_FUSE;
-    nade.pos.copy(origin);
-    nade.vel.set(dir.x * NADE_THROW, dir.y * NADE_THROW + NADE_LOB, dir.z * NADE_THROW);
-    mesh.visible = true;
-    return true;
-  }
-
-  function explode() {
-    nade.active = false;
-    mesh.visible = false;
-    burst.left = BURST_SECONDS;
-    burst.pos.copy(nade.pos);
-    burstLight.position.set(nade.pos.x, Math.max(0.6, nade.pos.y + 0.4), nade.pos.z);
-    explosions.push({ x: nade.pos.x, y: nade.pos.y, z: nade.pos.z });
+    return grenades.throwNade(origin, dir);
   }
 
   function step(dt) {
-    if (nade.active) {
-      nade.fuse -= dt;
-      nade.vel.y -= GRAVITY * dt;
-      nade.pos.x += nade.vel.x * dt;
-      nade.pos.y += nade.vel.y * dt;
-      nade.pos.z += nade.vel.z * dt;
-      if (nade.pos.y <= 0.09) {
-        nade.pos.y = 0.09;
-        if (Math.abs(nade.vel.y) > 1.2) {
-          nade.vel.y = -nade.vel.y * BOUNCE;
-          nade.vel.x *= ROLL;
-          nade.vel.z *= ROLL;
-          // A clay pot thuds and stays: clamp the skid so the burst hugs the landing spot.
-          const skid = Math.hypot(nade.vel.x, nade.vel.z);
-          if (skid > 3.2) {
-            nade.vel.x *= 3.2 / skid;
-            nade.vel.z *= 3.2 / skid;
-          }
-        } else {
-          nade.vel.y = 0;
-          nade.vel.x *= 0.86;
-          nade.vel.z *= 0.86;
-        }
-      }
-      mesh.position.copy(nade.pos);
-      if (nade.fuse <= 0) explode();
-    }
-    if (burst.left > 0) {
-      burst.left = Math.max(0, burst.left - dt);
-      const frac = 1 - burst.left / BURST_SECONDS;
-      burstMesh.visible = true;
-      burstMesh.position.copy(burst.pos);
-      burstMesh.scale.setScalar(0.4 + frac * NADE_RADIUS);
-      burstMesh.material.opacity = 0.55 * (1 - frac);
-      burstLight.intensity = (1 - frac) * 46;
-      if (burst.left === 0) {
-        burstMesh.visible = false;
-        burstLight.intensity = 0;
-      }
-    }
+    grenades.step(dt);
   }
 
   return {
-    state, CATALOG, NADE_RADIUS, NADE_MAX_DAMAGE,
+    state, CATALOG, NADE_MAX: grenades.NADE_MAX,
+    NADE_RADIUS: grenades.NADE_RADIUS, NADE_MAX_DAMAGE: grenades.NADE_MAX_DAMAGE,
     reset, award, buy, absorb, throwNade, step,
-    takeExplosions() {
-      if (!explosions.length) return null;
-      const snap = explosions.slice();
-      explosions.length = 0;
-      return snap;
-    },
+    takeExplosions: grenades.takeExplosions,
   };
 }

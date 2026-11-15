@@ -76,11 +76,13 @@ export function createHud() {
   const boardYou = document.getElementById('board-you');
   const boardFoes = document.getElementById('board-foes');
   const boardMates = document.getElementById('board-mates');
+  const boardRoster = document.getElementById('board-roster');
   const matesBar = document.getElementById('mates');
   const killfeed = document.getElementById('killfeed');
   const vignette = document.getElementById('vignette');
 
   let boardKey = '';
+  let rosterKey = '';
   let hitTimer = 0;
   let lastMatesKey = '';
   let lastMag = -1;
@@ -92,6 +94,24 @@ export function createHud() {
   let lastArmor = -1;
   let lastNades = -1;
   let lastClock = '';
+
+  // The guard roster: one row per warden, painted only when the joined lines change.
+  // Each line already carries "NAME  K k · DMG d · UP/DOWN"; the row keeps its own
+  // key so a guard falling strikes through without touching the rest of the table.
+  function paintRoster(rosterLines) {
+    if (!boardRoster) return;
+    const joined = rosterLines ? rosterLines.join('|') : '';
+    if (joined === rosterKey) return;
+    rosterKey = joined;
+    boardRoster.textContent = '';
+    if (!rosterLines) return;
+    for (const line of rosterLines) {
+      const row = document.createElement('div');
+      row.className = 'rrow' + (/DOWN$/.test(line) ? ' down' : '');
+      row.textContent = line;
+      boardRoster.appendChild(row);
+    }
+  }
 
   return {
     setAmmo(mag, reserve) {
@@ -229,20 +249,28 @@ export function createHud() {
       clock.classList.toggle('urgent', whole <= 20);
     },
     // The kick-table, up during buy time and the intermission. main.js pushes a full
-    // snapshot; we repaint only when the joined text actually changes.
-    showBoard(boardTitleText, score, youLine, foesLine, matesLine) {
+    // snapshot; we repaint only when the joined text actually changes. rosterLines is
+    // one string per guard — name and his K/DMG — rebuilt only when the roster turns over.
+    showBoard(boardTitleText, score, youLine, foesLine, matesLine, rosterLines) {
+      const rosterJoined = rosterLines ? rosterLines.join('|') : '';
       const key = `${boardTitleText}|${score}|${youLine}|${foesLine}|${matesLine}`;
-      if (key === boardKey && !board.hidden) return;
+      if (key === boardKey && !board.hidden) {
+        if (boardRoster && rosterJoined !== rosterKey) paintRoster(rosterLines);
+        return;
+      }
       boardKey = key;
       boardTitle.textContent = boardTitleText;
       boardScore.textContent = score;
       boardYou.textContent = youLine;
       boardFoes.textContent = foesLine;
       if (boardMates) boardMates.textContent = matesLine || '';
+      if (boardRoster) paintRoster(rosterLines);
       board.hidden = false;
     },
     hideBoard() {
       boardKey = '';
+      rosterKey = '';
+      if (boardRoster) boardRoster.textContent = '';
       if (!board.hidden) board.hidden = true;
     },
     setUse(label, frac) {

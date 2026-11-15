@@ -1,6 +1,7 @@
 // The yard crew: nine kiln-yard guards, each with a role, a weapon and a patrol. They
-// navigate the yard on the shared A* grid, hear gunfire and grenades, investigate
-// noises, converge on a planted charge, and — when they see an attacker — shoot true
+// navigate the yard on the shared A* grid, investigate noises (their reach and wall
+// muffling live in hearing.js), converge on a planted charge, and — when they see an
+// attacker — shoot true
 // hitscan rounds with per-weapon cadence, not probability rolls. The target is whoever
 // they actually see: the player or one of the three crew mates, nearest first. Head
 // shots land through a sphere test, body shots through a capsule test, so cover,
@@ -9,13 +10,13 @@
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 import { createNav, worldToCell, cellIndex, findPath } from './nav.js';
+import { createHearing } from './hearing.js';
 
 const HEALTH = 100;
 const FALL_SECONDS = 0.4;
 const REACTION = 0.38;       // a guard needs a beat to bring his weapon up
 const TURN_RATE = 8;
 const AIM_HEIGHT = 1.35;
-const HEAR_DECAY = 7;        // seconds a noise stays worth investigating
 const REPATH_GAP = 0.55;     // minimum seconds between replans for one guard
 const ARRIVE_DIST = 0.5;
 const BODY_RADIUS = 0.3;     // a body's capsule, shared shape with player.js
@@ -88,6 +89,7 @@ export function createBots(scene, world, nav) {
   const gunGeometry = new THREE.BoxGeometry(0.06, 0.09, 0.52);
 
   const blocked = nav ? nav.blocked : createNav(world).blocked;
+  const hearing = createHearing(world);
 
   const items = [];
   const hitMeshes = [];
@@ -183,32 +185,29 @@ export function createBots(scene, world, nav) {
     return true;
   }
 
-  // Radial blast from a firepot: falloff with distance, returns how many went down.
+  // Radial blast from a firepot: falloff with distance. Returns how many went down
+  // and the raw damage rolled, so the stat sheet can credit the throw honestly.
   function damageArea(x, z, radius, amount) {
     let kills = 0;
+    let damage = 0;
     for (const item of items) {
       if (!item.alive) continue;
       const d = Math.hypot(item.group.position.x - x, item.group.position.z - z);
       if (d > radius) continue;
-      item.health -= Math.round(amount * (1 - (d / radius) * 0.75));
+      const dealt = Math.round(amount * (1 - (d / radius) * 0.75));
+      item.health -= dealt;
+      damage += dealt;
       if (item.health <= 0) {
         down(item);
         kills += 1;
       }
     }
-    return kills;
+    return { kills, damage };
   }
 
-  // Noise travels: gunfire and firepots wake every guard inside the radius.
+  // Noise travels through hearing.js: radius reach, wall muffling, alert decay.
   function hear(x, z, radius) {
-    for (const item of items) {
-      if (!item.alive) continue;
-      const d = Math.hypot(item.group.position.x - x, item.group.position.z - z);
-      if (d > radius) continue;
-      item.alertX = x;
-      item.alertZ = z;
-      item.alertUntil = now + HEAR_DECAY;
-    }
+    hearing.hear(items, x, z, radius, now);
   }
 
   // A straight eye-to-chest line with no wall in between, inside the gun's reach.

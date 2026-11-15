@@ -10,12 +10,20 @@
 // wardens who stay down until the round turns over so elimination wins, a shop that actually
 // sells guns (the COIL-9 SMG and the scoped Longsight are bought, not issued), and a yard that
 // reads at a glance — procedural brick, panel seams, ground plates and painted site letters
-// under a brighter dusk. Put your PNG
+// under a brighter dusk. v7 gives the systems their own organs and the scoreboard
+// its names: the FIREPOT HE lives in grenade.js (throw, fuse, burst), guard hearing
+// lives in hearing.js with real wall muffling (an ear-to-source raycast — noise
+// behind brick carries less than half as far), the HUD keeps one quiet line of key
+// hints (G FRAG · E PLANT · B SUPPLY · M MUTE), and the round-end kick-table reads
+// like a roster: your K/D/DMG, the crew's, and one K · DMG · UP/DOWN row per named
+// guard. Put your PNG
 // or JPEG screenshots in screenshots/ (the first by name is the cover) and run it.
 //
 // v6 in short: the round runs on a live clock (stall out and it is a loss), wardens who go
 // down stay down until the round turns over so clearing the crew wins the round, and the yard
 // shop sells the guns — the COIL-9 SMG and the scoped Longsight are bought, never issued.
+// v7 in short: grenade.js owns the firepot, hearing.js owns the ears (walls muffle), the
+// HUD hints its keys in one line, and the kick-table names every guard with his K/DMG.
 //
 // The dossier is assembled by two deterministic runs (out and out2) whose trees must diff clean.
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
