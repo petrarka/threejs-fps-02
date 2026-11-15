@@ -11,6 +11,10 @@ const FALL_SECONDS = 0.4;
 const WALK_SPEED = 2.6;
 const ENGAGE_RANGE = 26;
 const FIRE_GAP = 0.7;
+const BURST_SIZE = 3;        // rounds before a longer recovery pause
+const BURST_PAUSE = 2.0;     // cooldown multiplier after a burst
+const REACTION = 0.4;        // a warden needs a beat to bring his weapon up
+const TURN_RATE = 8;         // how fast he swings to face a target
 const AIM_HEIGHT = 1.35;
 
 // Warden patrols the west/A side; stoker patrols the east/B side. Both converge on a
@@ -63,7 +67,7 @@ export function createBots(scene, world) {
       group, torso, head, legL, legR,
       health: HEALTH, alive: true, fall: 0, respawnAt: 0,
       route, waypoint: 1, forward: 1,
-      cooldown: 1 + index * 0.4, engaged: false,
+      cooldown: 1 + index * 0.4, engaged: false, wasEngaged: false, burst: 0,
     };
     torso.userData.target = item;
     head.userData.target = item;
@@ -124,6 +128,15 @@ export function createBots(scene, world) {
     return !wall || wall.distance > dist - 0.5;
   }
 
+  // A warden turns toward a point at a bounded rate, so flanking and quick pushes work.
+  function faceToward(item, tx, tz, dt) {
+    const target = Math.atan2(tx - item.group.position.x, tz - item.group.position.z);
+    let diff = target - item.group.rotation.y;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    item.group.rotation.y += diff * Math.min(1, dt * TURN_RATE);
+  }
+
   function step(dt, time, playerPos, onPlayerHit, rng) {
     now = time;
     for (const item of items) {
@@ -136,6 +149,8 @@ export function createBots(scene, world) {
           item.fall = 0;
           item.group.rotation.x = 0;
           item.cooldown = 0.8;
+          item.burst = 0;
+          item.wasEngaged = false;
         }
         continue;
       }
@@ -145,16 +160,21 @@ export function createBots(scene, world) {
       if (item.engaged) {
         const dx = playerPos.x - pos.x;
         const dz = playerPos.z - pos.z;
-        item.group.rotation.y = Math.atan2(dx, dz);
+        faceToward(item, playerPos.x, playerPos.z, dt);
+        if (!item.wasEngaged) item.cooldown = Math.max(item.cooldown, REACTION);
         item.cooldown -= dt;
         if (item.cooldown <= 0) {
-          item.cooldown = FIRE_GAP * (0.8 + rng() * 0.5);
+          item.burst += 1;
+          let gap = FIRE_GAP * (0.8 + rng() * 0.5);
+          if (item.burst % BURST_SIZE === 0) gap *= BURST_PAUSE; // recover between bursts
+          item.cooldown = gap;
           if (onPlayerHit) {
             const dist = Math.hypot(dx, dz);
             const chance = Math.max(0.08, 0.55 - dist * 0.014);
             if (rng() < chance) onPlayerHit(8 + Math.floor(rng() * 7));
           }
         }
+        item.wasEngaged = true;
       } else {
         const points = item.route.points;
         let tx;
@@ -179,16 +199,18 @@ export function createBots(scene, world) {
             // Hands on the charge: stand still and face it (bomb.js counts the seconds).
             item.legL.rotation.x = 0;
             item.legR.rotation.x = 0;
+            faceToward(item, tx, tz, dt);
           }
         } else {
           pos.x += (dx / dist) * WALK_SPEED * dt;
           pos.z += (dz / dist) * WALK_SPEED * dt;
-          item.group.rotation.y = Math.atan2(dx, dz);
+          faceToward(item, tx, tz, dt);
           const stride = Math.sin(time * 9 + item.waypoint) * 0.3;
           item.legL.rotation.x = stride;
           item.legR.rotation.x = -stride;
         }
         item.cooldown = Math.max(item.cooldown, 0.25);
+        item.wasEngaged = false;
       }
     }
   }
@@ -203,6 +225,8 @@ export function createBots(scene, world) {
       item.waypoint = 1;
       item.forward = 1;
       item.engaged = false;
+      item.wasEngaged = false;
+      item.burst = 0;
       item.group.rotation.set(0, 0, 0);
       item.group.position.set(sx, 0, sz);
     }

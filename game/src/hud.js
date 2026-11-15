@@ -75,6 +75,7 @@ export function createHud() {
   const boardYou = document.getElementById('board-you');
   const boardFoes = document.getElementById('board-foes');
   const killfeed = document.getElementById('killfeed');
+  const vignette = document.getElementById('vignette');
 
   let boardKey = '';
   let hitTimer = 0;
@@ -106,6 +107,7 @@ export function createHud() {
       lastHp = value;
       hp.textContent = String(Math.max(0, value));
       hp.classList.toggle('hurt', value <= 40);
+      vignette.classList.toggle('on', value <= 40 && value > 0);
     },
     setScore(value) {
       if (value === lastScore) return;

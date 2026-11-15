@@ -159,6 +159,17 @@
   #killfeed .kf .v { color: var(--muted); }
   #killfeed .kf .m { color: var(--ink); }
 
+  /* Low-health warning: an ember wash creeping in from the edges. */
+  #vignette {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 200ms ease;
+    background: radial-gradient(ellipse at center, transparent 52%, color-mix(in srgb, var(--accent) 52%, transparent) 100%);
+  }
+  #vignette.on { opacity: 1; }
+
   #bomb {
     position: fixed;
     left: 50%;
@@ -409,6 +420,7 @@
   </div>
   <canvas id="radar" width="148" height="148"></canvas>
   <div id="killfeed"></div>
+  <div id="vignette"></div>
   <div id="use" hidden><span id="use-label">PLANTING</span><span id="use-track"><i id="use-fill"></i></span></div>
 </div>
 
