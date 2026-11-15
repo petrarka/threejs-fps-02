@@ -22,8 +22,9 @@
 // v6 in short: the round runs on a live clock (stall out and it is a loss), wardens who go
 // down stay down until the round turns over so clearing the crew wins the round, and the yard
 // shop sells the guns — the COIL-9 SMG and the scoped Longsight are bought, never issued.
-// v7 in short: grenade.js owns the firepot, hearing.js owns the ears (walls muffle), the
-// HUD hints its keys in one line, and the kick-table names every guard with his K/DMG.
+// v7 in short: grenade.js owns the firepot end to end, hearing.js owns the ears — a
+// wall between source and guard muffles the noise to under half its reach — the HUD hints
+// its keys in one line, and the kick-table names every guard with his K and damage.
 //
 // The dossier is assembled by two deterministic runs (out and out2) whose trees must diff clean.
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.

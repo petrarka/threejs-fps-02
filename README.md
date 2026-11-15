@@ -27,7 +27,7 @@ WebAudio-synthesized sound. All names, map
 ("Emberline"), palette and geometry are original.
 
 Play: `node serve.ts` (or any static server) → open `game/` in desktop Chrome.
-Deterministic screenshot modes: `game/index.html?shot=start|play|plant|end|bots`.
+Deterministic screenshot modes: `game/index.html?shot=start|play|plant|end|bots|buy|match|nade|radar`.
 
 Dossier build: `MAKEFUN_OUTPUT_DIR=out node main.ts` (Node 22+).
 MIT License.
