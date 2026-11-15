@@ -74,6 +74,7 @@ export function createHud() {
   const boardScore = document.getElementById('board-score');
   const boardYou = document.getElementById('board-you');
   const boardFoes = document.getElementById('board-foes');
+  const killfeed = document.getElementById('killfeed');
 
   let boardKey = '';
   let hitTimer = 0;
@@ -223,6 +224,26 @@ export function createHud() {
     },
     hideOverlay() {
       overlay.hidden = true;
+    },
+    // The kill feed: newest on top, capped at five. Each row is "killer » victim".
+    pushKill(killer, victim) {
+      const row = document.createElement('div');
+      row.className = 'kf';
+      const k = document.createElement('span');
+      k.className = 'k';
+      k.textContent = killer;
+      const m = document.createElement('span');
+      m.className = 'm';
+      m.textContent = ' » ';
+      const v = document.createElement('span');
+      v.className = 'v';
+      v.textContent = victim;
+      row.append(k, m, v);
+      killfeed.insertBefore(row, killfeed.firstChild);
+      while (killfeed.childElementCount > 5) killfeed.removeChild(killfeed.lastChild);
+    },
+    clearKillfeed() {
+      killfeed.textContent = '';
     },
     onPlay(handler) {
       play.addEventListener('click', handler);

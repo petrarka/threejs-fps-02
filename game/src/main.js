@@ -124,6 +124,7 @@ function restart() {
   hud.setNades(economy.state.nades);
   hud.hideShop();
   hud.setAmmo(weapon.ammo[weapon.state.index].mag, weapon.ammo[weapon.state.index].reserve);
+  hud.clearKillfeed();
 }
 
 // --- Match flow (non-shot only): buy time -> live round -> intermission. ---
@@ -175,6 +176,7 @@ function resetRoundWorld() {
   hud.setAmmo(weapon.ammo[weapon.state.index].mag, weapon.ammo[weapon.state.index].reserve);
   hud.setArmor(economy.state.armor);
   hud.setNades(economy.state.nades);
+  hud.clearKillfeed();
 }
 
 function refreshShop() {
@@ -280,10 +282,12 @@ function shoot(spread) {
   raycaster.set(camera.position, direction);
   const hit = raycaster.intersectObjects(shootables, false)[0];
   if (hit && hit.object.userData.target) {
-    const amount = hit.object.userData.part === 'head' ? weapon.damage() * 3 : weapon.damage();
+    const headshot = hit.object.userData.part === 'head';
+    const amount = headshot ? weapon.damage() * 3 : weapon.damage();
     // Branch on the hitbox owner so damage is never applied twice: bots and dummies each
     // own their health and their death handling.
-    const killed = hit.object.userData.kind === 'bot'
+    const isBot = hit.object.userData.kind === 'bot';
+    const killed = isBot
       ? bots.damage(hit.object, amount)
       : targets.damage(hit.object, amount);
     score += killed ? 100 : 10;
@@ -291,6 +295,7 @@ function shoot(spread) {
       economy.award('kill');
       frags += 1;
       hud.setMoney(economy.state.money);
+      hud.pushKill('YOU', isBot ? hit.object.userData.target.route.name.toUpperCase() : 'DUMMY');
     }
     hud.setScore(score);
     hud.hitMarker(killed, markerHoldMs);
@@ -348,7 +353,10 @@ function onPlayerHit(amount) {
   hud.setHp(hp);
   hud.setArmor(economy.state.armor);
   if (hp > 0) sound.hurt();
-  if (hp <= 0) endRound('dead');
+  if (hp <= 0) {
+    hud.pushKill('WARDEN', 'YOU');
+    endRound('dead');
+  }
 }
 
 function step(dt) {
@@ -388,7 +396,10 @@ function step(dt) {
       const at = blasts[index];
       const kills = bots.damageArea(at.x, at.z, economy.NADE_RADIUS, economy.NADE_MAX_DAMAGE);
       if (kills > 0) {
-        for (let k = 0; k < kills; k += 1) economy.award('kill');
+        for (let k = 0; k < kills; k += 1) {
+          economy.award('kill');
+          hud.pushKill('YOU', 'WARDEN');
+        }
         frags += kills;
         score += kills * 100;
         hud.setScore(score);

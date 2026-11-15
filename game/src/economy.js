@@ -177,26 +177,14 @@ export function createEconomy(scene) {
     }
   }
 
-  // Radial damage scaled by distance; y is ignored (the yard is flat).
-  function damageAt(x, z, radius, maxDamage) {
-    return function apply(px, py, pz) {
-      const d = Math.hypot(px - x, pz - z);
-      if (d > radius) return 0;
-      return Math.round(maxDamage * (1 - (d / radius) * 0.75));
-    };
-  }
-
   return {
     state, CATALOG, NADE_RADIUS, NADE_MAX_DAMAGE,
-    reset, award, buy, absorb, throwNade, step, damageAt,
+    reset, award, buy, absorb, throwNade, step,
     takeExplosions() {
       if (!explosions.length) return null;
       const snap = explosions.slice();
       explosions.length = 0;
       return snap;
-    },
-    nadeInFlight() {
-      return nade.active;
     },
   };
 }

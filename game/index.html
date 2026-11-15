@@ -136,6 +136,29 @@
     pointer-events: none;
   }
 
+  #killfeed {
+    position: fixed;
+    right: 32px;
+    top: 190px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-end;
+    font-family: var(--font-readout);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    pointer-events: none;
+  }
+  #killfeed .kf {
+    padding: 3px 8px;
+    background: color-mix(in srgb, var(--canvas) 72%, transparent);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-panel);
+  }
+  #killfeed .kf .k { color: var(--accent); }
+  #killfeed .kf .v { color: var(--muted); }
+  #killfeed .kf .m { color: var(--ink); }
+
   #bomb {
     position: fixed;
     left: 50%;
@@ -385,6 +408,7 @@
     <div class="brow"><span class="bname">WARDENS</span><span id="board-foes"></span></div>
   </div>
   <canvas id="radar" width="148" height="148"></canvas>
+  <div id="killfeed"></div>
   <div id="use" hidden><span id="use-label">PLANTING</span><span id="use-track"><i id="use-fill"></i></span></div>
 </div>
 

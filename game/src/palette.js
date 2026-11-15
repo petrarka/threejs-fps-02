@@ -14,7 +14,3 @@ export const PALETTE = {
   sand: '#c2a071',     // dust, clay crates
   night: '#191a22',    // ceiling plane / sky slab
 };
-
-export function shade(name) {
-  return PALETTE[name];
-}

@@ -142,7 +142,6 @@ export function createWeapon(camera) {
     state,
     ammo,
     step,
-    WEAPONS,
     name() {
       return spec().name;
     },
