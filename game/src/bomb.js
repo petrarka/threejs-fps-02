@@ -159,5 +159,5 @@ export function createBomb(scene) {
     return `SITE ${state.site} · ${Math.max(0, state.timeLeft).toFixed(1)}`;
   }
 
-  return { state, position: group.position, step, reset, hudText };
+  return { state, position: group.position, step, reset, hudText, siteAt };
 }

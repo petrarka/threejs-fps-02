@@ -8,7 +8,9 @@ import { createInput } from './input.js';
 import { createPlayer } from './player.js';
 import { createWeapon } from './weapon.js';
 import { createTargets } from './targets.js';
+import { createNav } from './nav.js';
 import { createBots } from './bots.js';
+import { createMates } from './mates.js';
 import { createBomb } from './bomb.js';
 import { createEconomy } from './economy.js';
 import { createRounds, ROUNDS_TO_WIN } from './rounds.js';
@@ -48,16 +50,30 @@ const camera = new THREE.PerspectiveCamera(74, window.innerWidth / window.innerH
 scene.add(camera);
 
 const world = createWorld(scene);
+const nav = createNav(world);
 const targets = createTargets(scene);
-const bots = createBots(scene, world);
+const bots = createBots(scene, world, nav);
 const bomb = createBomb(scene);
 const economy = createEconomy(scene);
 const rounds = createRounds();
 const radar = createRadar(document.getElementById('radar'));
 const weapon = createWeapon(camera);
 const hud = createHud();
+// The crew: three mates run with the player. Guards only land hits on them while the
+// round is live — the same rule the player lives under.
+let liveNow = false;
+const mates = createMates(scene, world, bots, nav, { killfeed: (k, v) => hud.pushKill(k, v) });
+bots.setMates({
+  items: mates.items,
+  hitBy(item, amount, part, name) { if (liveNow) mates.hitBy(item, amount, part, name); },
+});
 const player = createPlayer(world.colliders);
 const input = createInput(renderer.domElement, onLockChange);
+const scopeEl = document.getElementById('scope');
+const crosshairEl = document.getElementById('crosshair');
+const BASE_FOV = 74;
+const SCOPE_FOV = 32;
+let aiming = false;
 const raycaster = new THREE.Raycaster();
 raycaster.far = 80;
 const shootables = world.shootables.concat(targets.hitMeshes, bots.hitMeshes);
@@ -108,6 +124,7 @@ function restart() {
   elapsed = 0;
   targets.reset();
   bots.reset();
+  mates.reset();
   bomb.reset();
   economy.reset();
   weapon.refill();
@@ -134,7 +151,13 @@ function roundText() {
   return `R${rounds.state.round} · ${rounds.state.wins}–${rounds.state.losses}`;
 }
 
-// The kick-table snapshot: score, your line, warden headcount. DOM only.
+// The kick-table snapshot: score, your line, warden headcount, the crew's K/D/DMG.
+function matesLine() {
+  const parts = [];
+  for (const m of mates.items) parts.push(`${m.name.toUpperCase()} ${m.kills}/${m.deaths}/${m.dmg}`);
+  return parts.join(' · ');
+}
+
 function pushBoard() {
   let up = 0;
   for (const item of bots.items) if (item.alive) up += 1;
@@ -143,6 +166,7 @@ function pushBoard() {
     `${rounds.state.wins}–${rounds.state.losses}`,
     `${frags} frags · ${hp} HP · $${economy.state.money}`,
     `${up}/${bots.items.length} up`,
+    matesLine(),
   );
 }
 
@@ -167,6 +191,7 @@ function resetRoundWorld() {
   body.eye = 1.6;
   targets.reset();
   bots.reset();
+  mates.reset();
   bomb.reset();
   weapon.refill();
   hud.setHp(hp);
@@ -401,7 +426,9 @@ function step(dt) {
   economy.step(dt);
   targets.step(dt, elapsed);
   const livePhase = shot || rounds.state.phase === 'live';
+  liveNow = !!livePhase;
   bots.step(dt, elapsed, body, livePhase ? onPlayerHit : null, random);
+  mates.step(dt, elapsed, body, bomb, random, !!livePhase);
   const blasts = economy.takeExplosions();
   if (blasts) {
     for (let index = 0; index < blasts.length; index += 1) {
@@ -427,10 +454,15 @@ function step(dt) {
       }
     }
   }
+  // The charge can go down through either pair of hands: the player holding E on a
+  // site, or Mason standing on one while the lane is quiet.
   const useHeld = livePhase && input.state.keys.has('KeyE');
-  const event = bomb.step(dt, body.position, useHeld, bots.alivePositions());
+  const mason = bomb.state.phase === 'carry' ? mates.planter() : null;
+  const actorPos = mason ? mason.group.position : body.position;
+  const actorHeld = mason ? true : useHeld;
+  const event = bomb.step(dt, actorPos, actorHeld, bots.alivePositions());
   if (bomb.state.phase === 'plant') {
-    hud.setUse('PLANTING THE CHARGE', bomb.state.progress);
+    hud.setUse(mason ? 'MASON PLANTS THE CHARGE' : 'PLANTING THE CHARGE', bomb.state.progress);
   } else if (bomb.state.phase === 'planted' && bomb.state.progress > 0) {
     hud.setUse('DEFUSING', bomb.state.progress);
   } else {
@@ -451,6 +483,9 @@ function step(dt) {
       if (bomb.state.blinkOn) sound.tick();
     }
   } else if (lastBlink) lastBlink = false;
+
+  // Take the whole guard crew down at once and the round is won by elimination.
+  if (!shot && !cleared && livePhase && bots.allDown()) endRound('cleared');
 }
 
 // Footstep cadence: only in live play, never in shot renders (no gesture, so silent anyway).
@@ -472,9 +507,10 @@ function frame(now) {
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
   if (!frozen) {
-    const look = input.takeLook();
-    player.look(look.x, look.y);
     const matchPhase = shot ? 'live' : rounds.state.phase;
+    aiming = !!(input.state.aiming && weapon.state.index === 2 && !economy.state.shopOpen && matchPhase === 'live');
+    const look = input.takeLook();
+    player.look(aiming ? look.x * 0.38 : look.x, aiming ? look.y * 0.38 : look.y);
     if (edge('KeyB') && started && !cleared && matchPhase === 'freeze') toggleShop();
     if (edge('KeyM')) sound.toggleMute();
     if (economy.state.shopOpen) {
@@ -502,9 +538,19 @@ function frame(now) {
     syncCamera();
     drawRadar();
     hud.setWeapon(weapon.name());
+    hud.setMates(mates.items);
     hud.setAmmo(weapon.ammo[weapon.state.index].mag, weapon.ammo[weapon.state.index].reserve);
     if (!shot) footsteps(dt);
   }
+  // Scope: the Longsight's right mouse draws the FOV down and the overlay up.
+  const targetFov = aiming ? SCOPE_FOV : BASE_FOV;
+  if (Math.abs(camera.fov - targetFov) > 0.05) {
+    camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 14);
+    camera.updateProjectionMatrix();
+  }
+  if (scopeEl.classList.contains('on') !== aiming) scopeEl.classList.toggle('on', aiming);
+  if (crosshairEl.style.opacity !== (aiming ? '0' : '')) crosshairEl.style.opacity = aiming ? '0' : '';
+  weapon.setViewVisible(!aiming);
   renderer.render(scene, camera);
 }
 
@@ -519,6 +565,14 @@ function runShot(name) {
   if (name === 'play' || name === 'end') {
     body.position.set(0, 0, -5);
     settle(20);
+    if (name === 'play') {
+      // The crew pushes the east corridor with you: Tally leads left, Mason right.
+      mates.stage([
+        [5.5, -6.2, 15, -9],
+        [3.5, -7.6, 15, -9],
+        null,
+      ]);
+    }
     const count = name === 'play' ? 1 : targets.items.length;
     for (let index = 0; index < count; index += 1) {
       const point = targets.aimPoint(index);
@@ -538,13 +592,19 @@ function runShot(name) {
     }
   } else if (name === 'plant') {
     // The charge goes down on site A through the real hold-E path; two seconds into the
-    // fuse the nearest warden is already closing in to defuse it.
+    // fuse the nearest warden is already closing in to defuse it, and the survivors of
+    // the push hold the pad with you.
     body.position.set(-14, 0, -7.6);
     settle(10);
     input.state.keys.add('KeyE');
     settle(200); // 3.33 s > PLANT_SECONDS
     input.state.keys.delete('KeyE');
     settle(120); // 2 s into the fuse, wardens converging
+    mates.stage([
+      [-15.4, -8.8, -20, -7],
+      [-14.2, -9.6, -16, -12],
+      null,
+    ]);
     aimAt(new THREE.Vector3(-15, 0.35, -9));
     settle(1);
   } else if (name === 'radar') {
@@ -590,10 +650,17 @@ function runShot(name) {
     settle(2);
   } else if (name === 'bots') {
     // Five simulated seconds from the CT step: the warden is mid-route, has a clear line,
-    // and is already firing — the frame catches a live firefight, not a corpse.
+    // and is already firing — the frame catches a live firefight, not a corpse. Tally
+    // is on your left shoulder answering it.
     body.position.set(0, 0.5, -11.6);
     settle(300);
-    aimAt(new THREE.Vector3(bots.items[0].group.position.x, 1.1, bots.items[0].group.position.z));
+    const warden = bots.items[0].group.position;
+    mates.stage([
+      [-3, -10.8, warden.x, warden.z],
+      null,
+      null,
+    ]);
+    aimAt(new THREE.Vector3(warden.x, 1.1, warden.z));
     settle(2);
   } else {
     body.position.set(0.6, 0, 8.6);
@@ -604,6 +671,7 @@ function runShot(name) {
   hud.setScore(score);
   hud.setWeapon(weapon.name());
   hud.setHp(hp);
+  hud.setMates(mates.items);
   hud.setAmmo(weapon.ammo[weapon.state.index].mag, weapon.ammo[weapon.state.index].reserve);
   hud.setMoney(economy.state.money);
   hud.setArmor(economy.state.armor, economy.state.helm);

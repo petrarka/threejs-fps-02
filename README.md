@@ -13,7 +13,12 @@ rounds, a five-slot buy menu (vest, helm, ammo, HE, stim), three weapons with
 fixed per-weapon recoil patterns and a grenade, recoil/spread heat model,
 headshot bonus, capsule hitboxes, and a nine-guard crew that walks A* routes,
 hears gunfire, investigates noise, converges on the charge and answers with
-true hitscan rounds (head sphere + body capsule tests, tracers), radar HUD,
+true hitscan rounds (head sphere + body capsule tests, tracers). You never run
+alone: three crew mates share the same A* grid and physics — Tally entries,
+Mason carries and plants the Ember on a quiet lane, Brack anchors your back —
+they see, fight and die beside you, ring the ticking charge and show their
+K/D/DMG on the round board. The Longsight scopes with the right mouse
+(FOV 74→32, low-sensitivity overlay). Radar HUD, alive-pip crew strip,
 WebAudio-synthesized sound. All names, map
 ("Emberline"), palette and geometry are original.
 

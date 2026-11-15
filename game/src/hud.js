@@ -4,7 +4,7 @@
 const COPY = {
   start: {
     title: 'Emberline',
-    copy: 'A dusk kiln-yard: two sites, one mid, four dummies, two wardens who shoot back. First to three rounds.',
+    copy: 'A dusk kiln-yard: two sites, one mid, nine guards with real hitscan rounds — and three mates who run with you. Tally entries, Mason plants the Ember, Brack watches the back. First to eight rounds.',
     action: 'Click to play',
   },
   paused: {
@@ -74,11 +74,14 @@ export function createHud() {
   const boardScore = document.getElementById('board-score');
   const boardYou = document.getElementById('board-you');
   const boardFoes = document.getElementById('board-foes');
+  const boardMates = document.getElementById('board-mates');
+  const matesBar = document.getElementById('mates');
   const killfeed = document.getElementById('killfeed');
   const vignette = document.getElementById('vignette');
 
   let boardKey = '';
   let hitTimer = 0;
+  let lastMatesKey = '';
   let lastMag = -1;
   let lastReserve = -1;
   let lastScore = -1;
@@ -205,14 +208,15 @@ export function createHud() {
     },
     // The kick-table, up during buy time and the intermission. main.js pushes a full
     // snapshot; we repaint only when the joined text actually changes.
-    showBoard(boardTitleText, score, youLine, foesLine) {
-      const key = `${boardTitleText}|${score}|${youLine}|${foesLine}`;
+    showBoard(boardTitleText, score, youLine, foesLine, matesLine) {
+      const key = `${boardTitleText}|${score}|${youLine}|${foesLine}|${matesLine}`;
       if (key === boardKey && !board.hidden) return;
       boardKey = key;
       boardTitle.textContent = boardTitleText;
       boardScore.textContent = score;
       boardYou.textContent = youLine;
       boardFoes.textContent = foesLine;
+      if (boardMates) boardMates.textContent = matesLine || '';
       board.hidden = false;
     },
     hideBoard() {
@@ -248,6 +252,22 @@ export function createHud() {
       row.append(k, m, v);
       killfeed.insertBefore(row, killfeed.firstChild);
       while (killfeed.childElementCount > 5) killfeed.removeChild(killfeed.lastChild);
+    },
+    // The crew strip: one pip per mate, lit while he is up. Builds its pips once.
+    setMates(list) {
+      let key = '';
+      for (const m of list) key += m.alive ? '1' : '0';
+      if (key === lastMatesKey) return;
+      lastMatesKey = key;
+      for (let i = 0; i < list.length; i += 1) {
+        let pip = matesBar.children[i];
+        if (!pip) {
+          pip = document.createElement('i');
+          matesBar.appendChild(pip);
+        }
+        pip.className = list[i].alive ? 'pip on' : 'pip';
+        pip.title = list[i].name;
+      }
     },
     clearKillfeed() {
       killfeed.textContent = '';

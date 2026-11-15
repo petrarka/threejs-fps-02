@@ -4,7 +4,9 @@
 // weapons read the held `firing` flag instead.
 export function createInput(canvas, onLockChange) {
   const keys = new Set();
-  const state = { keys, locked: false, firing: false, lookX: 0, lookY: 0, queuedShots: 0 };
+  const state = { keys, locked: false, firing: false, aiming: false, lookX: 0, lookY: 0, queuedShots: 0 };
+
+  window.addEventListener('contextmenu', (event) => event.preventDefault());
 
   function setKey(event, down) {
     if (down) keys.add(event.code);
@@ -23,11 +25,17 @@ export function createInput(canvas, onLockChange) {
   });
 
   window.addEventListener('mousedown', (event) => {
-    if (!state.locked || event.button !== 0) return;
+    if (!state.locked) return;
+    if (event.button === 2) {
+      state.aiming = true;
+      return;
+    }
+    if (event.button !== 0) return;
     state.firing = true;
     state.queuedShots += 1;
   });
   window.addEventListener('mouseup', (event) => {
+    if (event.button === 2) state.aiming = false;
     if (event.button === 0) state.firing = false;
   });
 
@@ -36,6 +44,7 @@ export function createInput(canvas, onLockChange) {
     if (!state.locked) {
       keys.clear();
       state.firing = false;
+      state.aiming = false;
       state.queuedShots = 0;
     }
     onLockChange(state.locked);

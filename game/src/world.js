@@ -113,13 +113,14 @@ export function createWorld(scene) {
   box(0.18, 3.4, 0.18, -4.9, 1.7, -8.0, 'accent');
   box(0.18, 3.4, 0.18, 4.9, 1.7, -8.0, 'accent');
 
-  // ---- light: warm low ember key, cool dusk fill, faint rim ---------------
-  scene.fog = new THREE.Fog(new THREE.Color(PALETTE.night), 18, 52);
+  // ---- light: warm low ember key, cool dusk fill, faint rim. Bright enough that
+  // the far yard still reads on a screenshot — dusk, not a cave. --------------
+  scene.fog = new THREE.Fog(new THREE.Color(PALETTE.night), 20, 60);
 
-  const sky = new THREE.HemisphereLight(new THREE.Color(PALETTE.hairline), new THREE.Color(PALETTE.canvas), 1.0);
+  const sky = new THREE.HemisphereLight(new THREE.Color(PALETTE.hairline), new THREE.Color(PALETTE.canvas), 1.35);
   scene.add(sky);
 
-  const key = new THREE.DirectionalLight(new THREE.Color(PALETTE.accent), 1.9);
+  const key = new THREE.DirectionalLight(new THREE.Color(PALETTE.accent), 2.15);
   key.position.set(14, 12, 10);
   key.target.position.set(0, 0, -4);
   key.castShadow = true;
@@ -132,11 +133,11 @@ export function createWorld(scene) {
   key.shadow.bias = -0.0006;
   scene.add(key, key.target);
 
-  const fill = new THREE.DirectionalLight(new THREE.Color(PALETTE.muted), 0.7);
+  const fill = new THREE.DirectionalLight(new THREE.Color(PALETTE.muted), 0.95);
   fill.position.set(-12, 10, 12);
   scene.add(fill);
 
-  const rim = new THREE.DirectionalLight(new THREE.Color(PALETTE.hairline), 0.4);
+  const rim = new THREE.DirectionalLight(new THREE.Color(PALETTE.hairline), 0.55);
   rim.position.set(0, 8, -16);
   scene.add(rim);
 

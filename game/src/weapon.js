@@ -177,6 +177,10 @@ export function createWeapon(camera) {
       if (index === state.index || state.reloadLeft > 0 || state.swapLeft > 0) return;
       loadWeapon(index);
     },
+    // Scoped aim hides the view-model: the Longsight's world is the scope overlay.
+    setViewVisible(v) {
+      models[state.index].visible = v;
+    },
     ready() {
       const box = ammo[state.index];
       return box.mag > 0 && state.cooldown === 0 && state.reloadLeft === 0 && state.swapLeft === 0;

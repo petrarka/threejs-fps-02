@@ -1,12 +1,14 @@
 // The yard crew: nine kiln-yard guards, each with a role, a weapon and a patrol. They
-// navigate the yard on a baked A* grid, hear gunfire and grenades, investigate noises,
-// converge on a planted charge, and — when they see the player — shoot true hitscan
-// rounds with per-weapon cadence, not probability rolls. Head shots land through a
-// sphere test, body shots through a capsule test, so cover, crouching and distance all
-// genuinely matter. Every decision flows from the seeded rng or the clock, so runs
-// with the same seed stay frame-identical.
+// navigate the yard on the shared A* grid, hear gunfire and grenades, investigate
+// noises, converge on a planted charge, and — when they see an attacker — shoot true
+// hitscan rounds with per-weapon cadence, not probability rolls. The target is whoever
+// they actually see: the player or one of the three crew mates, nearest first. Head
+// shots land through a sphere test, body shots through a capsule test, so cover,
+// crouching and distance all genuinely matter. Every decision flows from the seeded
+// rng or the clock, so runs with the same seed stay frame-identical.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
+import { createNav, worldToCell, cellIndex, findPath } from './nav.js';
 
 const HEALTH = 100;
 const RESPAWN_SECONDS = 6;
@@ -17,7 +19,7 @@ const AIM_HEIGHT = 1.35;
 const HEAR_DECAY = 7;        // seconds a noise stays worth investigating
 const REPATH_GAP = 0.55;     // minimum seconds between replans for one guard
 const ARRIVE_DIST = 0.5;
-const BODY_RADIUS = 0.3;     // the player's capsule, shared shape with player.js
+const BODY_RADIUS = 0.3;     // a body's capsule, shared shape with player.js
 const BODY_LO = 0.35;        // capsule segment inset from the feet
 const HEAD_RADIUS = 0.2;
 const HEAD_INSET = 0.16;     // head sphere centre below the crown
@@ -45,158 +47,6 @@ const ROSTER = [
   { name: 'roamer', gun: 'rifle', speed: 3.4, color: 'accent', points: [[-14, -9], [-6, -6.5], [0, -5.5], [7, -6.5], [14, -9], [6, 1.5], [-6, 1.5]] },
   { name: 'lurker', gun: 'rifle', speed: 2.8, color: 'muted', points: [[-2.6, 13], [2.6, 13], [0, 8.4]] },
 ];
-
-// ---- navigation grid -------------------------------------------------------
-// The yard is 48 × 32 m; cells are 0.8 m. A cell is blocked when a collider tall
-// enough to stop a body overlaps it (inflated by the body radius), so the same boxes
-// that stop bullets stop routes.
-const CELL = 0.8;
-const GRID_X = 60;           // -24 … +24
-const GRID_Z = 40;           // -16 … +16
-const GRID_X0 = -24;
-const GRID_Z0 = -16;
-
-function cellIndex(cx, cz) {
-  return cz * GRID_X + cx;
-}
-
-function worldToCell(x, z) {
-  return [
-    Math.max(0, Math.min(GRID_X - 1, Math.floor((x - GRID_X0) / CELL))),
-    Math.max(0, Math.min(GRID_Z - 1, Math.floor((z - GRID_Z0) / CELL))),
-  ];
-}
-
-function cellCenter(cx, cz) {
-  return [GRID_X0 + (cx + 0.5) * CELL, GRID_Z0 + (cz + 0.5) * CELL];
-}
-
-function buildGrid(colliders) {
-  const blocked = new Uint8Array(GRID_X * GRID_Z);
-  const min = new THREE.Vector3();
-  const max = new THREE.Vector3();
-  for (const box of colliders) {
-    if (box.max.y - box.min.y < 0.5) continue;   // plates and pads walk over
-    min.set(box.min.x - BODY_RADIUS, 0, box.min.z - BODY_RADIUS);
-    max.set(box.max.x + BODY_RADIUS, 0, box.max.z + BODY_RADIUS);
-    const [c0x, c0z] = worldToCell(min.x, min.z);
-    const [c1x, c1z] = worldToCell(max.x, max.z);
-    for (let cz = c0z; cz <= c1z; cz += 1) {
-      for (let cx = c0x; cx <= c1x; cx += 1) {
-        const [wx, wz] = cellCenter(cx, cz);
-        if (wx >= min.x && wx <= max.x && wz >= min.z && wz <= max.z) blocked[cellIndex(cx, cz)] = 1;
-      }
-    }
-  }
-  return blocked;
-}
-
-// Bresenham over the grid: true when a straight segment stays in free cells.
-function gridLineFree(blocked, x0, z0, x1, z1) {
-  const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / (CELL * 0.5)));
-  for (let i = 0; i <= steps; i += 1) {
-    const t = i / steps;
-    const [cx, cz] = worldToCell(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t);
-    if (blocked[cellIndex(cx, cz)]) return false;
-  }
-  return true;
-}
-
-// A* over the 8-neighbour grid with octile heuristic. Deterministic: ties break on
-// the lower h, then the lower cell index. Returns a list of [x, z] world waypoints
-// (cell centres), or null when no route exists.
-function findPath(blocked, sx, sz, tx, tz) {
-  const [scx, scz] = worldToCell(sx, sz);
-  const [tcx, tcz] = worldToCell(tx, tz);
-  if (blocked[cellIndex(tcx, tcz)]) return null;
-  const start = cellIndex(scx, scz);
-  const goal = cellIndex(tcx, tcz);
-  if (start === goal) return [[tx, tz]];
-  const g = new Float64Array(GRID_X * GRID_Z).fill(Infinity);
-  const from = new Int32Array(GRID_X * GRID_Z).fill(-1);
-  const closed = new Uint8Array(GRID_X * GRID_Z);
-  const open = [start];
-  g[start] = 0;
-  const hx = Math.abs(tcx - scx);
-  const hz = Math.abs(tcz - scz);
-  const hScore = new Float64Array(GRID_X * GRID_Z).fill(-1);
-  hScore[start] = Math.max(hx, hz) + 0.4142 * Math.min(hx, hz);
-  let guard = 0;
-  while (open.length && guard < 6000) {
-    guard += 1;
-    let bi = 0;
-    let bf = Infinity;
-    let bh = Infinity;
-    for (let i = 0; i < open.length; i += 1) {
-      const n = open[i];
-      const f = g[n] + hScore[n];
-      if (f < bf - 1e-9 || (Math.abs(f - bf) <= 1e-9 && hScore[n] < bh)) {
-        bf = f;
-        bh = hScore[n];
-        bi = i;
-      }
-    }
-    const cur = open[bi];
-    open[bi] = open[open.length - 1];
-    open.pop();
-    if (cur === goal) {
-      const path = [];
-      let n = cur;
-      while (n !== -1) {
-        const cx = n % GRID_X;
-        const cz = Math.floor(n / GRID_X);
-        path.push(cellCenter(cx, cz));
-        n = from[n];
-      }
-      path.reverse();
-      path.push([tx, tz]);
-      return smoothPath(blocked, path);
-    }
-    if (closed[cur]) continue;
-    closed[cur] = 1;
-    const ccx = cur % GRID_X;
-    const ccz = Math.floor(cur / GRID_X);
-    for (let dz = -1; dz <= 1; dz += 1) {
-      for (let dx = -1; dx <= 1; dx += 1) {
-        if (dx === 0 && dz === 0) continue;
-        const nx = ccx + dx;
-        const nz = ccz + dz;
-        if (nx < 0 || nz < 0 || nx >= GRID_X || nz >= GRID_Z) continue;
-        const ni = cellIndex(nx, nz);
-        if (blocked[ni] || closed[ni]) continue;
-        // No corner cutting: a diagonal needs both orthogonal neighbours free.
-        if (dx !== 0 && dz !== 0) {
-          if (blocked[cellIndex(ccx + dx, ccz)] || blocked[cellIndex(ccx, ccz + dz)]) continue;
-        }
-        const cost = g[cur] + ((dx !== 0 && dz !== 0) ? 1.4142 : 1);
-        if (cost < g[ni] - 1e-9) {
-          g[ni] = cost;
-          from[ni] = cur;
-          const ddx = Math.abs(tcx - nx);
-          const ddz = Math.abs(tcz - nz);
-          hScore[ni] = Math.max(ddx, ddz) + 0.4142 * Math.min(ddx, ddz);
-          open.push(ni);
-        }
-    }
-    }
-  }
-  return null;
-}
-
-// Greedy string-pulling: drop any waypoint a straight, walkable line can skip.
-function smoothPath(blocked, path) {
-  if (path.length <= 2) return path;
-  const out = [path[0]];
-  let anchor = 0;
-  for (let i = 2; i < path.length; i += 1) {
-    if (!gridLineFree(blocked, path[anchor][0], path[anchor][1], path[i][0], path[i][1])) {
-      out.push(path[i - 1]);
-      anchor = i - 1;
-    }
-  }
-  out.push(path[path.length - 1]);
-  return out;
-}
 
 // ---- ray tests -------------------------------------------------------------
 // Ray vs sphere: smallest positive t, or Infinity.
@@ -229,7 +79,7 @@ function rayVCapsule(ox, oy, oz, dx, dy, dz, px, py, pz, height) {
   return t;
 }
 
-export function createBots(scene, world) {
+export function createBots(scene, world, nav) {
   const bodyMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.ink), roughness: 0.6, metalness: 0.05 });
   const legMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.hairline), roughness: 0.85 });
   const gunMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.night), roughness: 0.5, metalness: 0.4 });
@@ -238,11 +88,12 @@ export function createBots(scene, world) {
   const legGeometry = new THREE.BoxGeometry(0.16, 0.62, 0.2);
   const gunGeometry = new THREE.BoxGeometry(0.06, 0.09, 0.52);
 
-  const blocked = buildGrid(world.colliders);
+  const blocked = nav ? nav.blocked : createNav(world).blocked;
 
   const items = [];
   const hitMeshes = [];
   let now = 0;
+  let mates = null; // set later: {items, hitBy(item, amount, part, shooter)}
 
   for (let index = 0; index < ROSTER.length; index += 1) {
     const entry = ROSTER[index];
@@ -252,7 +103,7 @@ export function createBots(scene, world) {
     legL.position.set(-0.14, 0.31, 0);
     const legR = new THREE.Mesh(legGeometry, legMat);
     legR.position.set(0.14, 0.31, 0);
-    // Capsule torso: the same shape the player's bullets are tested against.
+    // Capsule torso: the same shape the attackers' bullets are tested against.
     const torso = new THREE.Mesh(torsoGeometry, bodyMat);
     torso.position.y = 0.98;
     torso.userData.part = 'torso';
@@ -285,6 +136,7 @@ export function createBots(scene, world) {
       engagedSince: 0, strafePhase: index * 1.7,
       path: null, pathIndex: 0, repathAt: 0, mode: 'patrol',
       alertX: 0, alertZ: 0, alertUntil: 0, flashUntil: 0,
+      target: null, // {x, z, height, crouching, onHit(amount, part, name)}
     };
     torso.userData.target = item;
     head.userData.target = item;
@@ -319,6 +171,7 @@ export function createBots(scene, world) {
     item.fall = 0;
     item.respawnAt = now + RESPAWN_SECONDS;
     item.engaged = false;
+    item.target = null;
     item.mode = 'patrol';
     item.path = null;
   }
@@ -360,10 +213,10 @@ export function createBots(scene, world) {
     }
   }
 
-  // A guard sees the player when the eye-to-chest ray reaches them without a wall.
-  function canSee(item, playerPos) {
+  // A straight eye-to-chest line with no wall in between, inside the gun's reach.
+  function canSeeAt(item, tx, tz, ty) {
     eye.set(item.group.position.x, AIM_HEIGHT, item.group.position.z);
-    at.set(playerPos.x, playerPos.y + 1.2, playerPos.z);
+    at.set(tx, ty, tz);
     dir.subVectors(at, eye);
     const dist = dir.length();
     if (dist > item.gun.range) return false;
@@ -372,6 +225,39 @@ export function createBots(scene, world) {
     ray.far = item.gun.range;
     const wall = ray.intersectObjects(world.shootables, false)[0];
     return !wall || wall.distance > dist - 0.5;
+  }
+
+  // Pick who this guard fights: the nearest visible attacker — the player or a mate.
+  function acquireTarget(item, playerState, playerPos) {
+    let best = null;
+    let bestDist = Infinity;
+    const ph = playerState.height ?? 1.72;
+    const px = playerPos.x;
+    const pz = playerPos.z;
+    const dP = Math.hypot(px - item.group.position.x, pz - item.group.position.z);
+    if (dP < bestDist && canSeeAt(item, px, pz, playerPos.y + 1.2)) {
+      bestDist = dP;
+      best = {
+        x: px, z: pz, height: ph, crouching: !!playerState.crouching,
+        onHit: item.onPlayerHit ?? null,
+      };
+    }
+    if (mates) {
+      for (const mate of mates.items) {
+        if (!mate.alive) continue;
+        const mx = mate.group.position.x;
+        const mz = mate.group.position.z;
+        const dM = Math.hypot(mx - item.group.position.x, mz - item.group.position.z);
+        if (dM >= bestDist || !canSeeAt(item, mx, mz, 1.2)) continue;
+        bestDist = dM;
+        const target = mate;
+        best = {
+          x: mx, z: mz, height: 1.72, crouching: false,
+          onHit: (amount, part, name) => mates.hitBy(target, amount, part, name),
+        };
+      }
+    }
+    return best;
   }
 
   // A guard turns toward a point at a bounded rate, so flanking and quick pushes work.
@@ -420,21 +306,20 @@ export function createBots(scene, world) {
     return true;
   }
 
-  // One true hitscan round: a seeded aim error around the player's chest, a wall
-  // test, then head-sphere and body-capsule tests. Damage falls off with range.
-  function fireRound(item, playerState, onPlayerHit, rng) {
+  // One true hitscan round: a seeded aim error around the chest, a wall test, then
+  // head-sphere and body-capsule tests. Damage falls off with range.
+  function fireRound(item, target, rng) {
     const pos = item.group.position;
-    const p = playerState.position;
-    const height = playerState.height ?? 1.72;
+    const height = target.height ?? 1.72;
     const settle = item.engagedSince < 0.55 ? 2.1 : (item.engagedSince < 1.3 ? 1.35 : 1);
     const spread = item.gun.spread * settle;
-    const chestY = p.y + (playerState.crouching ? 0.72 : 1.12);
+    const chestY = target.crouching ? 0.72 : 1.12;
     const ox = pos.x;
     const oy = AIM_HEIGHT;
     const oz = pos.z;
-    let dx = p.x - ox;
+    let dx = target.x - ox;
     let dy = chestY - oy;
-    let dz = p.z - oz;
+    let dz = target.z - oz;
     const dist = Math.hypot(dx, dy, dz) || 1;
     dx = dx / dist + (rng() * 2 - 1) * spread;
     dy = dy / dist + (rng() * 2 - 1) * spread;
@@ -444,15 +329,15 @@ export function createBots(scene, world) {
     dy /= norm;
     dz /= norm;
 
-    // Where does this round stop if the player is not in the way?
+    // Where does this round stop if the target is not in the way?
     eye.set(ox, oy, oz);
     dir.set(dx, dy, dz);
     ray.set(eye, dir);
     ray.far = 70;
     const wall = ray.intersectObjects(world.shootables, false)[0];
 
-    const tHead = raySphere(ox, oy, oz, dx, dy, dz, p.x, p.y + height - HEAD_INSET, p.z, HEAD_RADIUS);
-    const tBody = rayVCapsule(ox, oy, oz, dx, dy, dz, p.x, p.y, p.z, height);
+    const tHead = raySphere(ox, oy, oz, dx, dy, dz, target.x, height - HEAD_INSET, target.z, HEAD_RADIUS);
+    const tBody = rayVCapsule(ox, oy, oz, dx, dy, dz, target.x, 0, target.z, height);
     let t = Math.min(tHead, tBody);
     if (t === Infinity) t = wall ? wall.distance : 40;
     if (wall && wall.distance < t) t = wall.distance;
@@ -472,7 +357,7 @@ export function createBots(scene, world) {
       const head = tHead <= tBody;
       const falloff = Math.max(0.5, 1 - dist * 0.011);
       const amount = Math.round(item.gun.damage * (head ? 2.2 : 1) * falloff);
-      if (onPlayerHit) onPlayerHit(amount, head ? 'head' : 'body', item.route.name);
+      if (target.onHit) target.onHit(amount, head ? 'head' : 'body', item.route.name);
     }
   }
 
@@ -501,15 +386,18 @@ export function createBots(scene, world) {
         continue;
       }
 
-      item.engaged = canSee(item, playerPos);
+      item.onPlayerHit = onPlayerHit;
+      item.target = acquireTarget(item, playerState, playerPos);
+      item.engaged = !!item.target;
       const pos = item.group.position;
       if (item.engaged) {
+        const target = item.target;
         if (!item.wasEngaged) {
           item.cooldown = Math.max(item.cooldown, REACTION);
           item.engagedSince = 0;
         }
         item.engagedSince += dt;
-        faceToward(item, playerPos.x, playerPos.z, dt);
+        faceToward(item, target.x, target.z, dt);
         // Strafe while he fights: a slow deterministic sway, seeded by his slot.
         const sway = Math.sin(time * 2.1 + item.strafePhase) * 0.5 * item.speed * dt;
         const px = -Math.sin(item.group.rotation.y);
@@ -527,7 +415,7 @@ export function createBots(scene, world) {
           let gap = item.gun.gap * (0.85 + rng() * 0.4);
           if (item.burst % item.gun.burst === 0) gap *= item.gun.pause;
           item.cooldown = gap;
-          fireRound(item, playerState, onPlayerHit, rng);
+          fireRound(item, target, rng);
         }
         item.wasEngaged = true;
         continue;
@@ -603,6 +491,7 @@ export function createBots(scene, world) {
       item.path = null;
       item.repathAt = 0;
       item.alertUntil = 0;
+      item.target = null;
       item.group.rotation.set(0, 0, 0);
       item.group.position.set(sx, 0, sz);
     }
@@ -611,6 +500,11 @@ export function createBots(scene, world) {
 
   return {
     items, hitMeshes, damage, damageArea, step, reset, hear,
+    setMates(api) { mates = api; },
+    allDown() {
+      for (const item of items) if (item.alive) return false;
+      return true;
+    },
     setObjective(x, z) {
       objective = x === null || x === undefined ? null : { x, z };
       if (objective) {

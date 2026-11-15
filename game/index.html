@@ -209,6 +209,40 @@
     color: var(--muted);
   }
 
+  /* The crew strip: one pip per mate under the round counter. */
+  #mates { position: fixed; left: 32px; top: 47px; display: flex; gap: 6px; }
+  #mates .pip {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid var(--hairline);
+    background: transparent;
+  }
+  #mates .pip.on { background: var(--accent); border-color: var(--accent); }
+
+  /* Scoped Longsight: a hard ring and cross hairs, the world outside goes dark. */
+  #scope { position: fixed; inset: 0; pointer-events: none; display: none; }
+  #scope.on { display: block; }
+  #scope::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at center, transparent 30%, rgba(10, 11, 15, 0.97) 31.5%);
+  }
+  #scope .tick {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 34vmin;
+    height: 34vmin;
+    transform: translate(-50%, -50%);
+    border: 1px solid var(--hairline);
+    border-radius: 50%;
+  }
+  #scope .hair { position: absolute; background: var(--ink); opacity: 0.8; }
+  #scope .hair.h { left: 0; right: 0; top: 50%; height: 1px; }
+  #scope .hair.v { top: 0; bottom: 0; left: 50%; width: 1px; }
+
   /* Intermission kick-table: stays up while the next round loads. */
   #board {
     position: fixed;
@@ -413,15 +447,18 @@
   <div id="bomb" hidden>SITE A · 40.0</div>
   <div id="phase" hidden>ROUND 1 · BUY TIME</div>
   <div id="round">R1 · 0–0</div>
+  <div id="mates"></div>
   <div id="board" hidden>
     <div id="board-head"><span>THE YARD</span><span id="board-score">0–0</span></div>
     <div class="brow"><span class="bname">YOU</span><span id="board-you"></span></div>
     <div class="brow"><span class="bname">WARDENS</span><span id="board-foes"></span></div>
+    <div class="brow"><span class="bname">CREW</span><span id="board-mates"></span></div>
   </div>
   <canvas id="radar" width="148" height="148"></canvas>
   <div id="killfeed"></div>
   <div id="vignette"></div>
   <div id="use" hidden><span id="use-label">PLANTING</span><span id="use-track"><i id="use-fill"></i></span></div>
+  <div id="scope"><span class="tick"></span><span class="hair h"></span><span class="hair v"></span></div>
 </div>
 
 <div id="shop" hidden>
@@ -442,13 +479,14 @@
 <div id="overlay" class="overlay">
   <section class="panel" role="dialog" aria-modal="true" aria-labelledby="overlay-title">
     <h1 id="overlay-title">Emberline</h1>
-    <p id="overlay-copy">A dusk kiln-yard: two sites, one mid, four dummies, nine guards with real hitscan rounds who hear every shot you fire. First to eight rounds. Click to play.</p>
+    <p id="overlay-copy">A dusk kiln-yard: two sites, one mid, nine guards with real hitscan rounds who hear every shot — and three mates who run with you. First to eight rounds. Click to play.</p>
     <button id="play" type="button">Click to play</button>
     <ul class="keys">
       <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</li>
       <li><kbd>Mouse</kbd> Look</li>
       <li><kbd>Click</kbd> Fire</li>
       <li><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> Pistol / Rifle / Longsight</li>
+      <li><kbd>RMB</kbd> Scope (Longsight)</li>
       <li><kbd>R</kbd> Reload</li>
       <li><kbd>B</kbd> Buy menu (buy time)</li>
       <li><kbd>G</kbd> Throw a firepot</li>
