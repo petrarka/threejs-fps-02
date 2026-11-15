@@ -3,7 +3,9 @@
 // map, and the program hands it in. It copies game/ and screenshots/ from beside this file to
 // /output and writes /output/dossier.json, the summary the judge reads, with the vendored make.fun
 // library. The game is "Emberline": a round-based tactical FPS on a dusk kiln-yard. v4 adds a
-// nine-guard hitscan squad that navigates by A* and hears every shot. Put your PNG
+// nine-guard hitscan squad that navigates by A* and hears every shot. v5 puts a crew of three
+// mates beside you — A* follow, an autonomous plant on a site, and honest hitscan team
+// firefights — and gives the Longsight a real scope (right mouse) that pulls the FOV in. Put your PNG
 // or JPEG screenshots in screenshots/ (the first by name is the cover) and run it.
 //
 // The dossier is assembled by two deterministic runs (out and out2) whose trees must diff clean.
