@@ -3,3 +3,4 @@ out2/
 opencode.json
 node_modules/
 .DS_Store
+shots-rendered/

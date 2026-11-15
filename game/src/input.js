@@ -1,8 +1,10 @@
-// Keyboard and mouse, and the pointer lock that turns the mouse into look. Plain browser
-// APIs only: the game asks the canvas for pointer lock and reads movementX/Y while it holds it.
+// Keyboard and mouse plus the pointer lock that turns the mouse into a look device.
+// Plain browser APIs: the game asks the canvas for pointer lock and reads movementX/Y
+// while it holds it. Semi-auto weapons consume one queued shot per click; full-auto
+// weapons read the held `firing` flag instead.
 export function createInput(canvas, onLockChange) {
   const keys = new Set();
-  const state = { keys, locked: false, firing: false, lookX: 0, lookY: 0 };
+  const state = { keys, locked: false, firing: false, lookX: 0, lookY: 0, queuedShots: 0 };
 
   function setKey(event, down) {
     if (down) keys.add(event.code);
@@ -13,22 +15,28 @@ export function createInput(canvas, onLockChange) {
   window.addEventListener('keydown', (event) => setKey(event, true));
   window.addEventListener('keyup', (event) => setKey(event, false));
   window.addEventListener('blur', () => keys.clear());
+
   window.addEventListener('mousemove', (event) => {
     if (!state.locked) return;
     state.lookX += event.movementX;
     state.lookY += event.movementY;
   });
+
   window.addEventListener('mousedown', (event) => {
-    if (state.locked && event.button === 0) state.firing = true;
+    if (!state.locked || event.button !== 0) return;
+    state.firing = true;
+    state.queuedShots += 1;
   });
   window.addEventListener('mouseup', (event) => {
     if (event.button === 0) state.firing = false;
   });
+
   document.addEventListener('pointerlockchange', () => {
     state.locked = document.pointerLockElement === canvas;
     if (!state.locked) {
       keys.clear();
       state.firing = false;
+      state.queuedShots = 0;
     }
     onLockChange(state.locked);
   });
@@ -44,6 +52,11 @@ export function createInput(canvas, onLockChange) {
       state.lookX = 0;
       state.lookY = 0;
       return { x, y };
+    },
+    takeQueuedShot() {
+      if (state.queuedShots <= 0) return false;
+      state.queuedShots -= 1;
+      return true;
     },
   };
 }

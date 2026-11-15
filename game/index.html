@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Greybox Range: a three.js FPS starter</title>
+<title>Emberline: a dusk kiln-yard FPS</title>
 <style>
-  /* Look plan: canvas, surface, hairline, ink, muted and one accent. Every colour below is one of the six. */
+  /* Look plan: canvas, surface, hairline, ink, muted and one accent. Every colour below is one of those. */
   :root {
-    --canvas: #14161a;
-    --surface: #1e2228;
-    --hairline: #2c323a;
-    --ink: #e9e6df;
-    --muted: #98a0a8;
-    --accent: #f0a830;
+    --canvas: #15171d;
+    --surface: #2b2c34;
+    --hairline: #4c4a56;
+    --ink: #f3e8d6;
+    --muted: #9a958e;
+    --accent: #f2883a;
     --radius-panel: 4px;
     --radius-control: 8px;
     --font-ui: system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -61,6 +61,16 @@
   #ammo.empty #ammo-mag { color: var(--accent); }
   #ammo-reserve { font-size: 16px; letter-spacing: -0.01em; color: var(--muted); }
 
+  #weapon-name {
+    position: fixed;
+    right: 32px;
+    bottom: 92px;
+    font-family: var(--font-readout);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    color: var(--muted);
+  }
+
   #score {
     position: fixed;
     left: 32px;
@@ -70,6 +80,216 @@
     color: var(--muted);
   }
   #score b { color: var(--ink); font-weight: 500; }
+
+  #money {
+    position: fixed;
+    left: 32px;
+    bottom: 78px;
+    font-family: var(--font-readout);
+    font-size: 22px;
+    color: var(--ink);
+  }
+  #money.flush { color: var(--accent); }
+  #money-label { font-size: 12px; color: var(--muted); margin-right: 6px; }
+
+  #vitals {
+    position: fixed;
+    left: 32px;
+    bottom: 52px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-family: var(--font-readout);
+    font-size: 24px;
+    color: var(--ink);
+  }
+  #vitals-label { font-size: 12px; color: var(--muted); }
+  #hp.hurt { color: var(--accent); }
+  #armor {
+    margin-left: 14px;
+    padding: 2px 8px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-panel);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  #armor[hidden] { display: none; }
+
+  #nades {
+    position: fixed;
+    right: 32px;
+    bottom: 76px;
+    font-family: var(--font-readout);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+  }
+  #nades[hidden] { display: none; }
+
+  #radar {
+    position: fixed;
+    right: 32px;
+    top: 28px;
+    width: 148px;
+    height: 148px;
+    border-radius: var(--radius-panel);
+    pointer-events: none;
+  }
+
+  #bomb {
+    position: fixed;
+    left: 50%;
+    top: 28px;
+    transform: translateX(-50%);
+    padding: 8px 18px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-panel);
+    background: color-mix(in srgb, var(--canvas) 78%, transparent);
+    font-family: var(--font-readout);
+    font-size: 22px;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+  #bomb[hidden] { display: none; }
+
+  #phase {
+    position: fixed;
+    left: 50%;
+    top: 84px;
+    transform: translateX(-50%);
+    font-family: var(--font-readout);
+    font-size: 14px;
+    letter-spacing: 0.24em;
+    color: var(--ink);
+    text-shadow: 0 1px 8px var(--canvas);
+  }
+  #phase[hidden] { display: none; }
+
+  #round {
+    position: fixed;
+    left: 32px;
+    top: 28px;
+    font-family: var(--font-readout);
+    font-size: 13px;
+    letter-spacing: 0.18em;
+    color: var(--muted);
+  }
+
+  /* Intermission kick-table: stays up while the next round loads. */
+  #board {
+    position: fixed;
+    left: 32px;
+    top: 54px;
+    min-width: 250px;
+    padding: 10px 14px 11px;
+    background: color-mix(in srgb, var(--canvas) 80%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ink) 24%, transparent);
+    font-family: var(--font-readout);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+  }
+  #board[hidden] { display: none; }
+  #board-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 22px;
+    color: var(--accent);
+    margin-bottom: 7px;
+  }
+  .brow {
+    display: flex;
+    justify-content: space-between;
+    gap: 22px;
+    margin-top: 4px;
+    color: var(--ink);
+  }
+  .brow .bname { color: var(--muted); }
+
+  #use {
+    position: fixed;
+    left: 50%;
+    bottom: 96px;
+    transform: translateX(-50%);
+    width: 220px;
+    text-align: center;
+    font-family: var(--font-readout);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    color: var(--ink);
+  }
+  #use[hidden] { display: none; }
+  #use-track {
+    margin-top: 6px;
+    height: 6px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-panel);
+    background: var(--canvas);
+    overflow: hidden;
+  }
+  #use-fill {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    transition: width 60ms linear;
+  }
+
+  #shop {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(380px, 92vw);
+    padding: 20px 24px;
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-panel);
+    pointer-events: none;
+  }
+  #shop[hidden] { display: none; }
+  #shop h2 {
+    margin: 0 0 4px;
+    font-family: var(--font-readout);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.22em;
+    color: var(--ink);
+  }
+  #shop-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 12px;
+    font-family: var(--font-readout);
+  }
+  #shop-money { color: var(--accent); font-size: 15px; }
+  #shop-hint { color: var(--muted); font-size: 11px; letter-spacing: 0.08em; margin-top: 12px; }
+  #shop ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+  #shop li {
+    display: grid;
+    grid-template-columns: 28px 1fr auto;
+    gap: 10px;
+    align-items: baseline;
+    padding: 7px 10px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-panel);
+    font-size: 13px;
+  }
+  #shop li kbd {
+    padding: 1px 5px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-panel);
+    font-family: var(--font-readout);
+    font-size: 11px;
+    color: var(--ink);
+    text-align: center;
+  }
+  #shop li b { font-weight: 500; letter-spacing: 0.06em; }
+  #shop li i { display: block; font-style: normal; color: var(--muted); font-size: 11px; }
+  #shop li .price { font-family: var(--font-readout); color: var(--ink); }
+  #shop li.poor { opacity: 0.45; }
+  #shop li.owned { border-color: var(--accent); }
+  #shop li .stock { grid-column: 2 / 4; color: var(--muted); font-size: 10px; letter-spacing: 0.1em; }
 
   .overlay {
     position: fixed;
@@ -151,19 +371,52 @@
   <div id="crosshair"><i></i><i></i><i></i><i></i></div>
   <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
   <div id="ammo"><span id="ammo-mag">30</span><span id="ammo-reserve">/ 90</span></div>
+  <div id="weapon-name">KILN-R</div>
+  <div id="nades" hidden>HE ×1</div>
+  <div id="vitals"><span id="vitals-label">HP</span><span id="hp">100</span><span id="armor" hidden>VEST 100</span></div>
+  <div id="money"><span id="money-label">CREDITS</span><span id="money-value">$800</span></div>
   <div id="score">Score <b id="score-value">0</b></div>
+  <div id="bomb" hidden>SITE A · 40.0</div>
+  <div id="phase" hidden>ROUND 1 · BUY TIME</div>
+  <div id="round">R1 · 0–0</div>
+  <div id="board" hidden>
+    <div id="board-head"><span>THE YARD</span><span id="board-score">0–0</span></div>
+    <div class="brow"><span class="bname">YOU</span><span id="board-you"></span></div>
+    <div class="brow"><span class="bname">WARDENS</span><span id="board-foes"></span></div>
+  </div>
+  <canvas id="radar" width="148" height="148"></canvas>
+  <div id="use" hidden><span id="use-label">PLANTING</span><span id="use-track"><i id="use-fill"></i></span></div>
+</div>
+
+<div id="shop" hidden>
+  <div id="shop-head">
+    <h2>KILN-YARD SUPPLY</h2>
+    <span id="shop-money">$800</span>
+  </div>
+  <ul>
+    <li data-item="vest"><kbd>1</kbd><span><b>CLAY VEST</b><i>soaks 55% of hits while it lasts</i></span><span class="price">$650</span><span class="stock" data-stock=""></span></li>
+    <li data-item="ammo"><kbd>2</kbd><span><b>AMMO CRATE</b><i>top up every reserve</i></span><span class="price">$300</span><span class="stock" data-stock=""></span></li>
+    <li data-item="he"><kbd>3</kbd><span><b>FIREPOT HE</b><i>+1 grenade, throw with G</i></span><span class="price">$400</span><span class="stock" data-stock=""></span></li>
+    <li data-item="stim"><kbd>4</kbd><span><b>STIM PACK</b><i>+60 HP, right now</i></span><span class="price">$500</span><span class="stock" data-stock=""></span></li>
+  </ul>
+  <p id="shop-hint">1-4 buy · B close</p>
 </div>
 
 <div id="overlay" class="overlay">
   <section class="panel" role="dialog" aria-modal="true" aria-labelledby="overlay-title">
-    <h1 id="overlay-title">Greybox Range</h1>
-    <p id="overlay-copy">A plain room, one rifle and four targets. Click to play.</p>
+    <h1 id="overlay-title">Emberline</h1>
+    <p id="overlay-copy">A dusk kiln-yard: two sites, one mid, four dummies, two wardens who shoot back. First to three rounds. Click to play.</p>
     <button id="play" type="button">Click to play</button>
     <ul class="keys">
       <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</li>
       <li><kbd>Mouse</kbd> Look</li>
       <li><kbd>Click</kbd> Fire</li>
+      <li><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> Pistol / Rifle / Longsight</li>
       <li><kbd>R</kbd> Reload</li>
+      <li><kbd>B</kbd> Buy menu (buy time)</li>
+      <li><kbd>G</kbd> Throw a firepot</li>
+      <li><kbd>M</kbd> Mute</li>
+      <li><kbd>E</kbd> Plant / defuse the charge on a glowing site</li>
       <li><kbd>Ctrl</kbd> Crouch</li>
       <li><kbd>Space</kbd> Jump</li>
     </ul>

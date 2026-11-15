@@ -1,13 +1,14 @@
-// Four target dummies: a post, a torso and a head. A head shot kills outright, three torso
-// shots do. A downed dummy falls over, then stands back up four seconds later.
+// Four range dummies: a weighted post, a torso and a head. A head shot kills outright and
+// three torso hits do the same. A downed dummy topples over, then rights itself four
+// seconds later. Their spawns sit clear of the wardens' routes so nothing overlaps.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
 const SPAWNS = [
-  [-4.6, -9.2],
-  [4.6, -9.2],
-  [0, -7.6],
-  [7.6, -6.2],
+  [-15.0, -9.0],   // site A
+  [15.0, -9.0],    // site B
+  [0, -5.4],       // mid, just past the CT step
+  [-7.4, 5.4],     // west lane mouth
 ];
 const HEALTH = 100;
 const RESPAWN_SECONDS = 4;
@@ -17,6 +18,7 @@ export function createTargets(scene) {
   const bodyMaterial = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.ink), roughness: 0.6, metalness: 0.05 });
   const headMaterial = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.accent), roughness: 0.45, metalness: 0.1 });
   const standMaterial = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.hairline), roughness: 0.85 });
+
   const torsoGeometry = new THREE.BoxGeometry(0.52, 0.78, 0.3);
   const headGeometry = new THREE.SphereGeometry(0.155, 16, 12);
   const postGeometry = new THREE.BoxGeometry(0.1, 0.55, 0.1);
