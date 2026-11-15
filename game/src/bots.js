@@ -11,7 +11,6 @@ import { PALETTE } from './palette.js';
 import { createNav, worldToCell, cellIndex, findPath } from './nav.js';
 
 const HEALTH = 100;
-const RESPAWN_SECONDS = 6;
 const FALL_SECONDS = 0.4;
 const REACTION = 0.38;       // a guard needs a beat to bring his weapon up
 const TURN_RATE = 8;
@@ -130,7 +129,7 @@ export function createBots(scene, world, nav) {
       group, torso, head, legL, legR,
       route: { name: entry.name, color: entry.color, points: entry.points },
       gun: GUNS[entry.gun], speed: entry.speed,
-      health: HEALTH, alive: true, fall: 0, respawnAt: 0,
+      health: HEALTH, alive: true, fall: 0,
       waypoint: 1, forward: 1,
       cooldown: 1 + index * 0.23, engaged: false, wasEngaged: false, burst: 0,
       engagedSince: 0, strafePhase: index * 1.7,
@@ -169,7 +168,6 @@ export function createBots(scene, world, nav) {
   function down(item) {
     item.alive = false;
     item.fall = 0;
-    item.respawnAt = now + RESPAWN_SECONDS;
     item.engaged = false;
     item.target = null;
     item.mode = 'patrol';
@@ -366,23 +364,11 @@ export function createBots(scene, world, nav) {
     const playerPos = playerState.position ?? playerState;
     for (const item of items) {
       if (!item.alive) {
+        // Downed wardens STAY down until the round turns over: no mid-round respawns,
+        // so clearing the whole crew wins the round by elimination. reset() revives
+        // everyone at the next freeze.
         item.fall = Math.min(1, item.fall + dt / FALL_SECONDS);
         item.group.rotation.x = -item.fall * 1.45;
-        if (time >= item.respawnAt) {
-          item.alive = true;
-          item.health = HEALTH;
-          item.fall = 0;
-          item.group.rotation.x = 0;
-          item.cooldown = 0.8;
-          item.burst = 0;
-          item.wasEngaged = false;
-          item.engagedSince = 0;
-          item.mode = 'patrol';
-          item.path = null;
-          const [hx, hz] = item.route.points[0];
-          item.group.position.set(hx, 0, hz);
-          item.waypoint = 1;
-        }
         continue;
       }
 

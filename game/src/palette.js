@@ -13,4 +13,5 @@ export const PALETTE = {
   brick: '#8a4a34',    // terracotta brick volumes
   sand: '#c2a071',     // dust, clay crates
   night: '#191a22',    // ceiling plane / sky slab
+  dusk: '#2b2733',     // warm dusk haze: scene background and far fog
 };

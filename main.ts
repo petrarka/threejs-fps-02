@@ -5,7 +5,12 @@
 // library. The game is "Emberline": a round-based tactical FPS on a dusk kiln-yard. v4 adds a
 // nine-guard hitscan squad that navigates by A* and hears every shot. v5 puts a crew of three
 // mates beside you — A* follow, an autonomous plant on a site, and honest hitscan team
-// firefights — and gives the Longsight a real scope (right mouse) that pulls the FOV in. Put your PNG
+// firefights — and gives the Longsight a real scope (right mouse) that pulls the FOV in. v6 is
+// the CS loop made honest: a live round clock on the HUD (stall it out and the round is lost),
+// wardens who stay down until the round turns over so elimination wins, a shop that actually
+// sells guns (the COIL-9 SMG and the scoped Longsight are bought, not issued), and a yard that
+// reads at a glance — procedural brick, panel seams, ground plates and painted site letters
+// under a brighter dusk. Put your PNG
 // or JPEG screenshots in screenshots/ (the first by name is the cover) and run it.
 //
 // The dossier is assembled by two deterministic runs (out and out2) whose trees must diff clean.

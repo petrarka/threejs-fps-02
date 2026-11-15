@@ -59,6 +59,7 @@ export function createHud() {
   const bomb = document.getElementById('bomb');
   const phase = document.getElementById('phase');
   const round = document.getElementById('round');
+  const clock = document.getElementById('clock');
   const use = document.getElementById('use');
   const useLabel = document.getElementById('use-label');
   const useFill = document.getElementById('use-fill');
@@ -90,6 +91,7 @@ export function createHud() {
   let lastMoney = -1;
   let lastArmor = -1;
   let lastNades = -1;
+  let lastClock = '';
 
   return {
     setAmmo(mag, reserve) {
@@ -137,8 +139,8 @@ export function createHud() {
       nades.hidden = value <= 0;
       nades.textContent = `HE ×${value}`;
     },
-    // The buy menu is keyboard-driven (1-5 buy, B closes); main.js passes the full state
-    // after every change so affordability and stock lines stay honest.
+    // The buy menu is keyboard-driven (1-7 buy, B closes); main.js passes the full state
+    // after every change so affordability and stock lines stay honest. Slots 6-7 sell guns.
     showShop(economyState, hpNow, maxHp, catalog) {
       shop.hidden = false;
       shopMoney.textContent = `$${economyState.money}`;
@@ -159,6 +161,9 @@ export function createHud() {
         } else if (item.key === 'helm') {
           owned = economyState.helm >= 1;
           stock = owned ? 'WORN' : 'on the shelf';
+        } else if (item.gun !== undefined) {
+          owned = !!(economyState.guns && economyState.guns[item.gun]);
+          stock = owned ? 'ON YOUR BACK' : 'on the rack';
         }
         row.classList.toggle('poor', !afford && !owned);
         row.classList.toggle('owned', owned);
@@ -205,6 +210,23 @@ export function createHud() {
     },
     setRound(text) {
       if (round.textContent !== text) round.textContent = text;
+    },
+    // The live round clock, pushed every fixed step while a round runs. null hides it.
+    // Turns urgent under twenty seconds left.
+    setClock(seconds) {
+      if (seconds === null || seconds === undefined) {
+        if (!clock.hidden) clock.hidden = true;
+        lastClock = '';
+        return;
+      }
+      const whole = Math.max(0, Math.ceil(seconds));
+      const text = `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+      if (text !== lastClock) {
+        lastClock = text;
+        clock.hidden = false;
+        clock.textContent = text;
+      }
+      clock.classList.toggle('urgent', whole <= 20);
     },
     // The kick-table, up during buy time and the intermission. main.js pushes a full
     // snapshot; we repaint only when the joined text actually changes.

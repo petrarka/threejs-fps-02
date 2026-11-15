@@ -28,6 +28,8 @@ export const CATALOG = [
   { key: 'he', slot: 3, name: 'FIREPOT HE', price: 400, note: '+1 grenade, throw with G' },
   { key: 'stim', slot: 4, name: 'STIM PACK', price: 500, note: '+60 HP, right now' },
   { key: 'helm', slot: 5, name: 'KILN HELM', price: 400, note: 'blunts headshots by 40%' },
+  { key: 'smg', slot: 6, name: 'COIL-9 SMG', price: 550, note: 'buy the gun: a fast 9mm hose', gun: 3 },
+  { key: 'longsight', slot: 7, name: 'LONGSIGHT DMR', price: 1200, note: 'buy the scope: 100 a torso', gun: 2 },
 ];
 
 export function createEconomy(scene) {
@@ -97,6 +99,7 @@ export function createEconomy(scene) {
   }
 
   // Returns true when the purchase went through; main.js owns hp/weapon and repaints the HUD.
+  // `gun` entries sell a weapon from the arsenal: ctx.unlockWeapon puts it in hand.
   function buy(key, ctx) {
     const item = CATALOG.find((entry) => entry.key === key);
     if (!item || state.money < item.price) return false;
@@ -104,12 +107,14 @@ export function createEconomy(scene) {
     if (key === 'helm' && state.helm >= 1) return false;
     if (key === 'he' && state.nades >= NADE_MAX) return false;
     if (key === 'stim' && ctx.hp >= ctx.maxHp) return false;
+    if (item.gun !== undefined && ctx.hasWeapon(item.gun)) return false;
     state.money -= item.price;
     if (key === 'vest') state.armor = 100;
     else if (key === 'helm') state.helm = 1;
     else if (key === 'he') state.nades += 1;
     else if (key === 'ammo') ctx.refillAmmo();
     else if (key === 'stim') ctx.heal(60);
+    else if (item.gun !== undefined) ctx.unlockWeapon(item.gun);
     return true;
   }
 

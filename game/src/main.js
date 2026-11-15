@@ -44,8 +44,8 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.getElementById('game').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(PALETTE.canvas);
-scene.fog = new THREE.Fog(new THREE.Color(PALETTE.canvas), 18, 46);
+scene.background = new THREE.Color(PALETTE.dusk);
+scene.fog = new THREE.Fog(new THREE.Color(PALETTE.dusk), 26, 78);
 const camera = new THREE.PerspectiveCamera(74, window.innerWidth / window.innerHeight, 0.05, 140);
 scene.add(camera);
 
@@ -58,6 +58,8 @@ const economy = createEconomy(scene);
 const rounds = createRounds();
 const radar = createRadar(document.getElementById('radar'));
 const weapon = createWeapon(camera);
+// The shop's stock lines read gun ownership straight off the arsenal's live table.
+economy.state.guns = weapon.unlocked;
 const hud = createHud();
 // The crew: three mates run with the player. Guards only land hits on them while the
 // round is live — the same rule the player lives under.
@@ -228,6 +230,14 @@ function tryBuy(slotIndex) {
       hp = Math.min(100, hp + amount);
       hud.setHp(hp);
     },
+    hasWeapon(index) {
+      return weapon.unlocked[index];
+    },
+    unlockWeapon(index) {
+      if (!weapon.unlock(index)) return;
+      hud.setWeapon(weapon.name());
+      hud.setAmmo(weapon.ammo[weapon.state.index].mag, weapon.ammo[weapon.state.index].reserve);
+    },
   });
   if (ok) {
     sound.buy();
@@ -349,7 +359,8 @@ function endRound(mode) {
   cleared = true;
   economy.state.shopOpen = false;
   hud.hideShop();
-  const lost = mode === 'defused' || mode === 'dead';
+  hud.setClock(null);
+  const lost = mode === 'defused' || mode === 'dead' || mode === 'timeout';
   economy.award(lost ? 'loss' : 'win');
   sound.roundEnd(!lost);
   hud.setMoney(economy.state.money);
@@ -406,11 +417,18 @@ function step(dt) {
       hud.hideBoard();
       hud.setPhase(null);
       hud.setRound(roundText());
+      hud.setClock(rounds.state.clock);
     } else if (transition === 'freeze') {
       cleared = false;
+      hud.setClock(null);
       resetRoundWorld();
       beginFreeze();
+    } else if (transition === 'timeout') {
+      // The round clock hit zero with the charge unplanted: the crew loses the round.
+      // If the Ember is already in the ground the fuse, not the clock, decides it.
+      if (bomb.state.phase !== 'planted') endRound('timeout');
     }
+    if (rounds.state.phase === 'live') hud.setClock(rounds.state.clock);
     if (rounds.state.phase === 'freeze') {
       const count = Math.ceil(rounds.state.clock);
       if (count !== lastCount) {
@@ -518,7 +536,7 @@ function frame(now) {
         if (edge(`Digit${slot + 1}`)) tryBuy(slot);
       }
     } else if (matchPhase === 'live') {
-      for (let slot = 0; slot < 3; slot += 1) {
+      for (let slot = 0; slot < weapon.count(); slot += 1) {
         if (input.state.keys.has(`Digit${slot + 1}`)) weapon.switchTo(slot);
       }
       const wantsShot = weapon.automatic() ? input.state.firing : input.takeQueuedShot();
@@ -676,6 +694,11 @@ function runShot(name) {
   hud.setMoney(economy.state.money);
   hud.setArmor(economy.state.armor, economy.state.helm);
   hud.setNades(economy.state.nades);
+  // Staged shots show the live round clock like real play does.
+  if (name === 'play') hud.setClock(95);
+  else if (name === 'plant' || name === 'radar') hud.setClock(38);
+  else if (name === 'bots') hud.setClock(71);
+  else hud.setClock(null);
   paintTwiceThenReady();
 }
 

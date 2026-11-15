@@ -25,6 +25,11 @@ const PATTERN_RIFLE = [
   [0.02, 0.007], [0.02, -0.008], [0.021, 0.008], [0.021, -0.008],
 ];
 const PATTERN_MARKSMAN = [[0.05, 0.006]];
+// The COIL-9's ladder barely climbs — it shakes side to side like the hose it is.
+const PATTERN_SMG = [
+  [0.007, 0.004], [0.008, -0.005], [0.008, 0.005], [0.009, -0.006],
+  [0.009, 0.006], [0.01, -0.006], [0.01, 0.007], [0.011, -0.007],
+];
 
 const MOVE_REFERENCE = 5.2;
 const HEAT_PER_ROUND = 0.16;
@@ -53,6 +58,13 @@ const WEAPONS = [
     spreadStill: 0.0006, spreadMoving: 0.05, spreadHeat: 0.004,
     kick: 0.12, recoilPitch: 0.05, automatic: false, pattern: PATTERN_MARKSMAN,
     model: { receiver: [0.07, 0.11, 0.6], barrel: [0.04, 0.04, 0.62], barrelZ: -0.58, scope: true },
+  },
+  {
+    key: 'smg', name: 'COIL-9',
+    damage: 22, magSize: 32, reserve: 128, fireGap: 0.068, reloadTime: 1.65,
+    spreadStill: 0.0034, spreadMoving: 0.036, spreadHeat: 0.024,
+    kick: 0.038, recoilPitch: 0.008, automatic: true, pattern: PATTERN_SMG,
+    model: { receiver: [0.07, 0.1, 0.3], barrel: [0.04, 0.04, 0.22], barrelZ: -0.24, stock: true, grip: true },
   },
 ];
 
@@ -108,6 +120,9 @@ export function createWeapon(camera) {
   // Per-weapon ammo survives switching; heat and cooldowns are shared across the rig.
   const ammo = WEAPONS.map((w) => ({ mag: w.magSize, reserve: w.reserve }));
   const state = { index: 1, cooldown: 0, reloadLeft: 0, flash: 0, kick: 0, heat: 0, swapLeft: 0, patternIndex: 0 };
+  // The pistol and the KILN-R are issued free; the Longsight and the COIL-9 are
+  // bought at the yard shop (economy.js) and land on your back the moment they are.
+  const unlocked = [true, true, false, false];
 
   function spec() {
     return WEAPONS[state.index];
@@ -174,8 +189,19 @@ export function createWeapon(camera) {
       return spec().recoilPitch;
     },
     switchTo(index) {
-      if (index === state.index || state.reloadLeft > 0 || state.swapLeft > 0) return;
+      if (index === state.index || !unlocked[index] || state.reloadLeft > 0 || state.swapLeft > 0) return;
       loadWeapon(index);
+    },
+    unlocked,
+    count() {
+      return WEAPONS.length;
+    },
+    // A shop purchase: flag the gun owned and put it in your hands.
+    unlock(index) {
+      if (index < 0 || index >= WEAPONS.length || unlocked[index]) return false;
+      unlocked[index] = true;
+      loadWeapon(index);
+      return true;
     },
     // Scoped aim hides the view-model: the Longsight's world is the scope overlay.
     setViewVisible(v) {

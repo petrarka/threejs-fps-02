@@ -209,6 +209,20 @@
     color: var(--muted);
   }
 
+  /* The live round clock under the round counter. Urgent when time runs short. */
+  #clock {
+    position: fixed;
+    left: 32px;
+    top: 66px;
+    font-family: var(--font-readout);
+    font-size: 15px;
+    letter-spacing: 0.14em;
+    color: var(--ink);
+  }
+  #clock[hidden] { display: none; }
+  #clock.urgent { color: var(--accent); animation: clockpulse 1s infinite; }
+  @keyframes clockpulse { 50% { opacity: 0.45; } }
+
   /* The crew strip: one pip per mate under the round counter. */
   #mates { position: fixed; left: 32px; top: 47px; display: flex; gap: 6px; }
   #mates .pip {
@@ -447,6 +461,7 @@
   <div id="bomb" hidden>SITE A · 40.0</div>
   <div id="phase" hidden>ROUND 1 · BUY TIME</div>
   <div id="round">R1 · 0–0</div>
+  <div id="clock" hidden>1:55</div>
   <div id="mates"></div>
   <div id="board" hidden>
     <div id="board-head"><span>THE YARD</span><span id="board-score">0–0</span></div>
@@ -472,8 +487,10 @@
     <li data-item="he"><kbd>3</kbd><span><b>FIREPOT HE</b><i>+1 grenade, throw with G</i></span><span class="price">$400</span><span class="stock" data-stock=""></span></li>
     <li data-item="stim"><kbd>4</kbd><span><b>STIM PACK</b><i>+60 HP, right now</i></span><span class="price">$500</span><span class="stock" data-stock=""></span></li>
     <li data-item="helm"><kbd>5</kbd><span><b>KILN HELM</b><i>blunts headshots by 40%</i></span><span class="price">$400</span><span class="stock" data-stock=""></span></li>
+    <li data-item="smg"><kbd>6</kbd><span><b>COIL-9 SMG</b><i>buy the gun: a fast 9mm hose</i></span><span class="price">$550</span><span class="stock" data-stock=""></span></li>
+    <li data-item="longsight"><kbd>7</kbd><span><b>LONGSIGHT DMR</b><i>buy the scope: 100 a torso</i></span><span class="price">$1200</span><span class="stock" data-stock=""></span></li>
   </ul>
-  <p id="shop-hint">1-5 buy · B close</p>
+  <p id="shop-hint">1-7 buy · B close</p>
 </div>
 
 <div id="overlay" class="overlay">

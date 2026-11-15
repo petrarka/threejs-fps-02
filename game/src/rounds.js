@@ -4,6 +4,7 @@
 export const FREEZE_SECONDS = 6;
 export const OVER_SECONDS = 3.2;
 export const ROUNDS_TO_WIN = 8;
+export const ROUND_SECONDS = 115; // the live round clock: stall it out and the round is lost
 
 export function createRounds() {
   const state = {
@@ -35,15 +36,24 @@ export function createRounds() {
     return 'round';
   }
 
-  // Counts down freeze/over. On a boundary returns the new phase ('live' or 'freeze' for
-  // the next round); null while the current phase still has time left.
+  // Counts down freeze/over/live. On a boundary returns the new phase ('live',
+  // 'freeze' for the next round, or 'timeout' when the live clock hits zero);
+  // null while the current phase still has time left.
   function tick(dt) {
+    if (state.phase === 'live') {
+      state.clock -= dt;
+      if (state.clock <= 0) {
+        state.clock = 0;
+        return 'timeout';
+      }
+      return null;
+    }
     if (state.phase !== 'freeze' && state.phase !== 'over') return null;
     state.clock -= dt;
     if (state.clock > 0) return null;
     if (state.phase === 'freeze') {
       state.phase = 'live';
-      state.clock = 0;
+      state.clock = ROUND_SECONDS;
       return 'live';
     }
     state.round += 1;

@@ -4,7 +4,8 @@
 //   * a west long lane that curls from spawn up into site A;
 //   * an east short connector that links spawn to site B through a single door.
 // Every box is both a player collider and a surface a bullet stops on, so the same
-// geometry drives movement, shooting and the radar underlay. No models, no textures.
+// geometry drives movement, shooting and the radar underlay. No models — every
+// surface wears a procedural canvas skin (brick, panels, plates, site letters).
 //
 // Axes: +x east, +z south. Attackers spawn at z=+12, defenders at z=-12.
 import * as THREE from 'three';
@@ -16,13 +17,75 @@ export function createWorld(scene) {
   const group = new THREE.Group();
   scene.add(group);
 
+  // Procedural canvas skins: every big surface gets a real pattern, drawn once at
+  // load — brick courses, concrete panel seams, ground plates, clay speckle. The
+  // texture multiplies the palette colour, so each material keeps its dusk tone.
+  function makeTexture(size, repeatX, repeatY, draw) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    draw(canvas.getContext('2d'), size);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(repeatX, repeatY);
+    tex.anisotropy = 4;
+    return tex;
+  }
+
+  const brickTex = makeTexture(128, 2, 2, (g, s) => {
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, s, s);
+    g.fillStyle = '#9a8f8a';
+    for (let row = 0; row < 8; row += 1) {
+      g.fillRect(0, row * 16, s, 2); // mortar courses
+      const off = row % 2 ? 16 : 0;
+      for (let col = 0; col < 4; col += 1) g.fillRect(((col * 32 + off) % s), row * 16, 2, 16);
+    }
+    g.fillStyle = 'rgba(70,60,55,0.18)';
+    for (let i = 0; i < 40; i += 1) g.fillRect((i * 37) % s, (i * 53) % s, 5, 3);
+  });
+  const panelTex = makeTexture(128, 2, 2, (g, s) => {
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, s, s);
+    g.fillStyle = '#8d8d94';
+    for (let i = 0; i <= 4; i += 1) {
+      g.fillRect(i * 32, 0, 2, s);
+      g.fillRect(0, i * 32, s, 2);
+    }
+    g.fillStyle = 'rgba(60,60,66,0.15)';
+    for (let i = 0; i < 24; i += 1) g.fillRect((i * 41) % s, (i * 29) % s, 7, 2);
+  });
+  const groundTex = makeTexture(256, 8, 6, (g, s) => {
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, s, s);
+    g.fillStyle = '#8f8f93';
+    for (let i = 0; i <= 4; i += 1) {
+      g.fillRect(i * 64, 0, 3, s);
+      g.fillRect(0, i * 64, s, 3);
+    }
+    g.fillStyle = 'rgba(50,48,52,0.25)';
+    for (let i = 0; i < 90; i += 1) g.fillRect((i * 47) % s, (i * 71) % s, 4, 2);
+  });
+  const sandTex = makeTexture(64, 2, 2, (g, s) => {
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, s, s);
+    g.fillStyle = 'rgba(90,75,55,0.35)';
+    for (let i = 0; i < 60; i += 1) g.fillRect((i * 17) % s, (i * 23) % s, 2, 2);
+  });
+
   const materials = {};
   for (const name of Object.keys(PALETTE)) {
     const shiny = name === 'accent' || name === 'sand';
+    const map = name === 'brick' ? brickTex
+      : name === 'surface' ? panelTex
+        : name === 'ground' ? groundTex
+          : name === 'sand' ? sandTex
+            : null;
     materials[name] = new THREE.MeshStandardMaterial({
       color: new THREE.Color(PALETTE[name]),
       roughness: shiny ? 0.6 : 0.92,
       metalness: name === 'accent' ? 0.15 : 0.03,
+      map,
     });
   }
 
@@ -77,6 +140,28 @@ export function createWorld(scene) {
   box(1.2, 2.8, 1.2, 18.4, 1.4, -8.6, 'surface');
   box(2.6, 0.9, 1.2, 12.6, 0.45, -4.2, 'sand');
 
+  // Painted site letters flat on the pads — the yard reads at a glance from any angle.
+  function siteLetter(letter, x, z) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 128;
+    const g = canvas.getContext('2d');
+    g.fillStyle = '#f3e8d6';
+    g.font = '900 92px system-ui, sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(letter, 64, 68);
+    const tex = new THREE.CanvasTexture(canvas);
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.6, 3.6),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.85, depthWrite: false }),
+    );
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(x, 0.2, z);
+    group.add(mesh);
+  }
+  siteLetter('A', -15, -9);
+  siteLetter('B', 15, -9);
+
   // ---- mid: a walled lane from the south doors to the CT step --------------
   wall(-4, 16, -4, 4, 'surface');
   wall(4, 16, 4, 4, 'surface');
@@ -115,12 +200,12 @@ export function createWorld(scene) {
 
   // ---- light: warm low ember key, cool dusk fill, faint rim. Bright enough that
   // the far yard still reads on a screenshot — dusk, not a cave. --------------
-  scene.fog = new THREE.Fog(new THREE.Color(PALETTE.night), 20, 60);
+  scene.fog = new THREE.Fog(new THREE.Color(PALETTE.dusk), 24, 72);
 
-  const sky = new THREE.HemisphereLight(new THREE.Color(PALETTE.hairline), new THREE.Color(PALETTE.canvas), 1.35);
+  const sky = new THREE.HemisphereLight(new THREE.Color(PALETTE.hairline), new THREE.Color(PALETTE.canvas), 1.7);
   scene.add(sky);
 
-  const key = new THREE.DirectionalLight(new THREE.Color(PALETTE.accent), 2.15);
+  const key = new THREE.DirectionalLight(new THREE.Color(PALETTE.accent), 2.5);
   key.position.set(14, 12, 10);
   key.target.position.set(0, 0, -4);
   key.castShadow = true;
@@ -133,13 +218,21 @@ export function createWorld(scene) {
   key.shadow.bias = -0.0006;
   scene.add(key, key.target);
 
-  const fill = new THREE.DirectionalLight(new THREE.Color(PALETTE.muted), 0.95);
+  const fill = new THREE.DirectionalLight(new THREE.Color(PALETTE.muted), 1.2);
   fill.position.set(-12, 10, 12);
   scene.add(fill);
 
-  const rim = new THREE.DirectionalLight(new THREE.Color(PALETTE.hairline), 0.55);
+  const rim = new THREE.DirectionalLight(new THREE.Color(PALETTE.hairline), 0.75);
   rim.position.set(0, 8, -16);
   scene.add(rim);
+
+  // Ember lamp pools: the four accent posts are lit, so the lanes read in warm circles
+  // even in the deepest part of the yard.
+  for (const [lx, lz] of [[-4.6, 12.2], [4.6, 12.2], [-4.9, -8.0], [4.9, -8.0]]) {
+    const lamp = new THREE.PointLight(new THREE.Color(PALETTE.accent), 16, 15, 1.7);
+    lamp.position.set(lx, 3.1, lz);
+    scene.add(lamp);
+  }
 
   return { colliders, shootables, group };
 }
