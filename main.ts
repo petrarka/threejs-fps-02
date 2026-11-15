@@ -2,7 +2,8 @@
 // game/ folder, plain static files the browser loads as ES modules with three.js from an import
 // map, and the program hands it in. It copies game/ and screenshots/ from beside this file to
 // /output and writes /output/dossier.json, the summary the judge reads, with the vendored make.fun
-// library. The game is "Emberline": a round-based tactical FPS on a dusk kiln-yard. Put your PNG
+// library. The game is "Emberline": a round-based tactical FPS on a dusk kiln-yard. v4 adds a
+// nine-guard hitscan squad that navigates by A* and hears every shot. Put your PNG
 // or JPEG screenshots in screenshots/ (the first by name is the cover) and run it.
 //
 // The dossier is assembled by two deterministic runs (out and out2) whose trees must diff clean.
