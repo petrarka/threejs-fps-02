@@ -151,6 +151,7 @@ export function createWeapon(camera) {
     flash.rotation.z += dt * 19;
     flashLight.intensity = state.flashLeft > 0 ? 11 : 0;
 
+    // Walk sway plus recoil travel; the rig is pure presentation.
     const sway = Math.min(1, speed / 4.85);
     rig.position.x = 0.31 + Math.sin(state.time * 7.5) * 0.006 * sway;
     rig.position.y = -0.27 + Math.abs(Math.cos(state.time * 7.5)) * 0.009 * sway - state.recoil * 0.13;
@@ -213,6 +214,8 @@ export function createWeapon(camera) {
       box.mag += topped;
       box.reserve -= topped;
     },
+    // One trigger pull: deduct a round, light the muzzle, return the recoil
+    // impulse from the weapon's fixed pattern with a small jitter.
     fire(rng) {
       if (ammo[state.index].mag <= 0) return null;
       ammo[state.index].mag -= 1;
@@ -232,6 +235,8 @@ export function createWeapon(camera) {
       state.cooldown = current().reload;
       return true;
     },
+    // Resting spread + movement penalty + heat penalty; the scope all but
+    // zeroes the resting term on the Longsight.
     spread(speed, scoped) {
       const spec = current();
       const rest = scoped && state.index === 2 ? 0.00012 : spec.spread;

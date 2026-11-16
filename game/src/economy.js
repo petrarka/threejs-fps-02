@@ -1,5 +1,6 @@
-// Round economy and the five-slot field kit. Utility slots and the two
-// optional primaries share one menu, but every purchase is validated here.
+// Round economy and the five-slot field kit plus the primary rack. Utility
+// slots and the two optional primaries share one menu, but every purchase is
+// validated here — the HUD only displays what this module decides.
 import { createGrenades, FIREPOT } from './grenade.js';
 
 export const CATALOG = Object.freeze([
@@ -46,6 +47,7 @@ export function createEconomy(scene, world) {
     }
   }
 
+  // Every purchase rule lives in this one place.
   function buy(key, ctx) {
     const item = CATALOG.find((entry) => entry.key === key);
     if (!item || state.money < item.price) return false;

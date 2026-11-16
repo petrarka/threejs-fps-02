@@ -1,5 +1,6 @@
 // Clay calibration marks along the north wall: optional aim references with
-// real head/body hit meshes. They are never a round objective.
+// real head/body hit meshes that shatter-fall when shot out. They are range
+// furniture, never a round objective.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
@@ -49,6 +50,7 @@ export function createTargets(scene) {
       return { killed: false, damage: dealt, item };
     },
     step(time) {
+      // Idle sway keeps the range visibly alive between rounds.
       for (const item of items) {
         if (item.alive) item.group.rotation.y = Math.sin(time * 0.7 + item.phase) * 0.08;
       }

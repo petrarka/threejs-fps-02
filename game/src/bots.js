@@ -7,6 +7,7 @@ import { PALETTE } from './palette.js';
 import { createHearing } from './hearing.js';
 import { clearSight, createTracerPool, makeCharacter, rayBodyCapsule, raySphere } from './combat.js';
 
+// Patrol loops, chosen weapons and walking pace per guard.
 const ROUTES = [
   { gun: 'rifle', pace: 2.45, trim: 'ember', points: [[-17, -13], [-12, -12], [-11, -6], [-16, -4.8]] },
   { gun: 'rifle', pace: 2.45, trim: 'danger', points: [[17, -13], [12, -12], [11.5, -6], [16, -4.8]] },
@@ -19,6 +20,7 @@ const ROUTES = [
   { gun: 'rifle', pace: 2.6, trim: 'muted', points: [[6, -6], [9, -4], [5, -1], [0, -4]] },
 ];
 
+// Guard-side ballistics: burst length and rest rhythm shape the pressure.
 const ARSENAL = {
   pistol: { damage: 10, gap: 0.31, burst: 3, rest: 1.4, spread: 0.028, range: 22 },
   rifle: { damage: 9, gap: 0.14, burst: 5, rest: 1.65, spread: 0.024, range: 30 },
@@ -154,10 +156,11 @@ export function createBots(scene, world, nav, hooks = {}) {
     return best;
   }
 
+  // One honest hitscan round at the current target. Aim takes a beat to
+  // settle after first contact — close and early is wild.
   function fire(item, target, rng) {
     const p = item.group.position;
     muzzle.set(p.x, 1.34, p.z);
-    // Aim takes a beat to settle after first contact — close and early is wild.
     const settle = item.contactFor < 0.55 ? 1.9 : item.contactFor < 1.2 ? 1.3 : 1;
     const spread = item.gun.spread * settle;
     const chestY = target.feetY + (target.crouched ? 0.72 : 1.08);
@@ -205,6 +208,8 @@ export function createBots(scene, world, nav, hooks = {}) {
     return { killed: false, damage: dealt, item };
   }
 
+  // Explosion evaluation: falloff by distance, and a wall between the pot and
+  // a guard soaks the burst entirely.
   function blast(x, y, z, radius, maximum) {
     const results = [];
     for (const item of items) {
@@ -212,7 +217,6 @@ export function createBots(scene, world, nav, hooks = {}) {
       const p = item.group.position;
       const span = Math.hypot(p.x - x, p.y + 0.8 - y, p.z - z);
       if (span > radius) continue;
-      // Blast respects cover: a wall between pot and guard soaks the burst.
       if (!clearSight(ray, world.solids, x, Math.max(0.2, y), z, p.x, 0.9, p.z, 0.2)) continue;
       const amount = Math.round(maximum * (1 - 0.8 * span / radius));
       results.push({ item, ...damage(item.torso, amount) });
@@ -252,6 +256,7 @@ export function createBots(scene, world, nav, hooks = {}) {
         continue;
       }
       if (objective) {
+        // The planted Ember pulls every living guard to the charge.
         item.mode = 'defuse';
         routeTo(item, objective.x, objective.z);
         if (!advance(item, dt, 1.2)) face(item, objective.x, objective.z, dt);

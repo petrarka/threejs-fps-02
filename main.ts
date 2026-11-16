@@ -1,37 +1,31 @@
-// A working threejs-fps-02 entry (Node 22, standard library only): the game is this directory's
-// game/ folder, plain static files the browser loads as ES modules with three.js from an import
-// map, and the program hands it in. It copies game/ and screenshots/ from beside this file to
-// /output and writes /output/dossier.json, the summary the judge reads, with the vendored make.fun
-// library. The game is "Emberline": a round-based tactical FPS on a dusk kiln-yard. v4 adds a
-// nine-guard hitscan squad that navigates by A* and hears every shot. v5 puts a crew of three
-// mates beside you — A* follow, an autonomous plant on a site, and honest hitscan team
-// firefights — and gives the Longsight a real scope (right mouse) that pulls the FOV in. v6 is
-// the CS loop made honest: a live round clock on the HUD (stall it out and the round is lost),
-// wardens who stay down until the round turns over so elimination wins, a shop that actually
-// sells guns (the COIL-9 SMG and the scoped Longsight are bought, not issued), and a yard that
-// reads at a glance — procedural brick, panel seams, ground plates and painted site letters
-// under a brighter dusk. v7 gives the systems their own organs and the scoreboard
-// its names: the FIREPOT HE lives in grenade.js (throw, fuse, burst), guard hearing
-// lives in hearing.js with real wall muffling (an ear-to-source raycast — noise
-// behind brick carries less than half as far), the HUD keeps one quiet line of key
-// hints (G FRAG · E PLANT · B SUPPLY · M MUTE), and the round-end kick-table reads
-// like a roster: your K/D/DMG, the crew's, and one K · DMG · UP/DOWN row per named
-// guard. Put your PNG
-// or JPEG screenshots in screenshots/ (the first by name is the cover) and run it.
+// make.fun threejs-fps-02 entry — "Emberline", a round-based tactical
+// single-player FPS in plain ES modules (three.js 0.187.0 vendored under
+// game/vendor, no build step, no network at runtime). This Node program is
+// the hand-in: it copies game/ and screenshots/ from beside this file into
+// the output directory and writes dossier.json, the summary the judge reads,
+// with the vendored make.fun library.
 //
-// v6 in short: the round runs on a live clock (stall out and it is a loss), wardens who go
-// down stay down until the round turns over so clearing the crew wins the round, and the yard
-// shop sells the guns — the COIL-9 SMG and the scoped Longsight are bought, never issued.
-// v7 in short: grenade.js owns the firepot end to end, hearing.js owns the ears — a
-// wall between source and guard muffles the noise to under half its reach — the HUD hints
-// its keys in one line, and the kick-table names every guard with his K and damage.
+// The game in one breath: you and three AI crew mates (Tally, Mason, Brack)
+// push a dusk kiln yard held by nine named guards. Rounds are won by
+// elimination or by the Ember objective — hold E on a site to plant, defend
+// the 40-second fuse, or defuse with E. Money flows between rounds into a
+// five-slot field kit (vest, helm, ammo, FIREPOT HE, stim) and a two-gun
+// primary rack (COIL-9 SMG, scoped Longsight — RMB pulls FOV 74 down to 32
+// with low-sensitivity aim). Every combatant routes over one shared A* nav
+// grid, hears shots through real wall muffling (hearing.js runs an
+// ear-to-source raycast; heavy kiln masonry cuts a noise's reach to a fifth),
+// and shoots true hitscan rounds against head-sphere + body-capsule hitboxes
+// with fixed per-weapon recoil patterns and a heat-driven spread model.
+// All audio is WebAudio-synthesized; all textures are canvas-painted.
 //
-// The dossier is assembled by two deterministic runs (out and out2) whose trees must diff clean.
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
+// Screenshot scenes are deterministic: serve statically and open
+// game/index.html?shot=start|play|plant|end|bots|buy|match|nade|radar.
+// Serve locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Two runs must produce identical trees — the build is deterministic.
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-threejs.ts';
@@ -42,12 +36,27 @@ const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 mkdirSync(out, { recursive: true });
 cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
 mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+if (existsSync(join(here, 'screenshots'))) {
+  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+}
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
-// files, in all: game/ counts beside /output's own 1000-entry cap, its screenshots/ and dossier.json).
+// Dossier caps mirror the scorer's reference gate: text payload size, the
+// screenshot count/size budget, and the game/ tree's file and byte ceilings
+// (game/ counts beside /output's own cap, with screenshots/ and dossier.json).
 writeFileSync(
   join(out, 'dossier.json'),
   buildDossier(out, { text_max_bytes: 163840, screenshots: { max: 4, max_bytes: 262144 }, game_max_files: 993, game_max_bytes: 50331648 }),
 );
+
+// The verification pass taught this entrypoint to say what it handed in, so a
+// headless run leaves evidence of the tree it built, not just a silent exit.
+function countFiles(dir) {
+  let total = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    total += entry.isDirectory() ? countFiles(join(dir, entry.name)) : 1;
+  }
+  return total;
+}
+const gameFiles = countFiles(join(out, 'game'));
+const shotFiles = readdirSync(join(out, 'screenshots')).length;
+console.log(`dossier written to ${join(out, 'dossier.json')} (game: ${gameFiles} files, screenshots: ${shotFiles})`);

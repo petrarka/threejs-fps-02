@@ -1,5 +1,6 @@
-// DOM presentation layer. The HUD renders snapshots and events; it never makes
-// combat or economy decisions. Expensive roster rows rebuild only on change.
+// DOM presentation layer. The HUD renders snapshots and events; it never
+// makes combat or economy decisions. Expensive roster rows rebuild only when
+// their data actually changes.
 import { clockText, GUARD_NAMES } from './config.js';
 
 const $ = (id) => document.getElementById(id);
@@ -146,6 +147,8 @@ export function createHud() {
 
     clearFeed() { el.feed.textContent = ''; },
 
+    // The kick-table: you, the crew, then one row per named guard. Rebuilds
+    // only when a digest of every rendered value changes.
     showBoard(data) {
       const key = [
         data.rounds.number, data.rounds.crew, data.rounds.guards, data.status,

@@ -39,7 +39,7 @@ export function createBomb(scene) {
   scene.add(group);
 
   const state = {
-    phase: 'carry',
+    phase: 'carry', // carry -> planting -> planted -> done
     site: null,
     fuse: FUSE_TIME,
     plantProgress: 0,
@@ -84,6 +84,8 @@ export function createBomb(scene) {
     paintFace('EMBER');
   }
 
+  // One fixed step of the objective. `actor` is whoever holds the use key
+  // (you or the planting mate); guardPositions drives the defending defuse.
   function step(dt, actor, useHeld, guardPositions) {
     if (state.phase === 'done') return null;
 

@@ -61,6 +61,7 @@ export function createMates(scene, world, bots, nav, hooks = {}) {
     item.group.rotation.y += delta * Math.min(1, dt * rate);
   }
 
+  // Nearest living guard in range and in the open.
   function acquire(item) {
     const p = item.group.position;
     let best = null;
@@ -132,7 +133,7 @@ export function createMates(scene, world, bots, nav, hooks = {}) {
     if (!Number.isFinite(tracerSpan)) tracerSpan = CARBINE.range;
     tracers.fire(muzzle, dir, tracerSpan, clock);
     if (hooks.shot) hooks.shot(item);
-    bots.hear(p.x, p.z, 22, 'shot');
+    bots.hear(p.x, p.z, 22, 'shot'); // crew fire is loud too — guards react
 
     if (targetSpan === Infinity || (wall && wall.distance < targetSpan)) return;
     const headshot = headSpan <= bodySpan;
@@ -159,7 +160,7 @@ export function createMates(scene, world, bots, nav, hooks = {}) {
     return true;
   }
 
-  // Mason plants only on a lane with no living guard within earshot of the pad.
+  // Mason plants only on a lane with no living guard near the pad.
   function laneIsQuiet(item) {
     const p = item.group.position;
     for (const guard of bots.items) {
@@ -205,6 +206,7 @@ export function createMates(scene, world, bots, nav, hooks = {}) {
       item.contactFor = 0;
       item.cooldown = Math.max(item.cooldown, 0.1);
 
+      // The planter peels off to a free site when the lane is quiet.
       if (live && item.role === 'planter' && ['carry', 'planting'].includes(bomb.state.phase)) {
         const site = bomb.siteAt(item.group.position);
         if (site && laneIsQuiet(item)) {
@@ -214,6 +216,7 @@ export function createMates(scene, world, bots, nav, hooks = {}) {
           continue;
         }
       }
+      // A planted charge turns the crew outward to hold the ring.
       if (live && bomb.state.phase === 'planted') {
         item.mode = 'hold';
         const angle = item.phase;

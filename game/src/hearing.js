@@ -1,6 +1,7 @@
-// Guard hearing: audible events become short-lived investigation orders, never
-// magical target knowledge. A real ray between source and ear decides how much
-// of a sound survives the masonry between them.
+// Guard hearing as its own organ: an audible event becomes a short-lived
+// investigation order — never free target knowledge. A real ray from ear to
+// source decides how much of the sound survives the masonry in between, so a
+// shot behind a kiln carries far less than one fired in the open.
 import * as THREE from 'three';
 
 export function createHearing(world) {
@@ -8,8 +9,8 @@ export function createHearing(world) {
   const ear = new THREE.Vector3();
   const toward = new THREE.Vector3();
 
-  // How much of a noise at (x, z) reaches this listener: 1 in the open,
-  // sharply less through a wall, worse again through a kiln core.
+  // Fraction of a noise's reach that survives to this guard: full in the
+  // open, sharply reduced through a wall, worst through heavy kiln masonry.
   function transmission(guard, x, z) {
     const p = guard.group.position;
     ear.set(p.x, 1.35, p.z);
@@ -24,6 +25,8 @@ export function createHearing(world) {
     return hit.object.userData.heavy ? 0.22 : 0.43;
   }
 
+  // Wake every guard close enough to actually hear this event. Blasts nag at
+  // a guard's attention longer than plain gunfire.
   function emit(guards, x, z, loudness, time, kind = 'shot') {
     for (const guard of guards) {
       if (!guard.alive) continue;

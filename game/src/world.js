@@ -1,12 +1,13 @@
 // The Emberline kiln yard: an original three-lane dusk map. Every surface is
-// painted into canvases here — no image files — and geometry, collision,
-// ballistics and navigation all read the same box list, so cover that blocks
-// the eye also blocks bullets, noise and pathing.
+// painted into canvases in this file — no image files anywhere — and the same
+// box list feeds rendering, collision, ballistics and the nav grid, so cover
+// that blocks the eye also blocks bullets, noise and pathing.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 import { SITES } from './config.js';
 
-function paintTexture(size, painter, repeatX = 1, repeatY = 1) {
+// Paint a square canvas, wrap it into a repeating sRGB texture.
+function makeTexture(size, painter, repeatX = 1, repeatY = 1) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   painter(canvas.getContext('2d'), size);
@@ -18,8 +19,8 @@ function paintTexture(size, painter, repeatX = 1, repeatY = 1) {
   return texture;
 }
 
-// Deterministic LCG grain so textures survive reloads unchanged.
-function grain(g, size, count, tint) {
+// Deterministic speckle (LCG-driven) so baked textures survive reloads intact.
+function speckle(g, size, count, tint) {
   g.fillStyle = tint;
   let state = 712367;
   for (let i = 0; i < count; i += 1) {
@@ -31,7 +32,7 @@ function grain(g, size, count, tint) {
   }
 }
 
-function signTexture(title, subtitle, accent = PALETTE.ember) {
+function bakeSign(title, subtitle, accent = PALETTE.ember) {
   const canvas = document.createElement('canvas');
   canvas.width = 1024;
   canvas.height = 256;
@@ -60,7 +61,8 @@ export function createWorld(scene) {
   const solids = [];
   const radarWalls = [];
 
-  const brickMap = paintTexture(256, (g, s) => {
+  // --- baked materials -----------------------------------------------------
+  const brickMap = makeTexture(256, (g, s) => {
     g.fillStyle = '#b7aaa0';
     g.fillRect(0, 0, s, s);
     for (let row = 0; row < 12; row += 1) {
@@ -72,10 +74,10 @@ export function createWorld(scene) {
       g.fillStyle = 'rgba(255,235,214,.10)';
       g.fillRect(0, y + 3, s, 2);
     }
-    grain(g, s, 260, 'rgba(35,27,29,.18)');
+    speckle(g, s, 260, 'rgba(35,27,29,.18)');
   }, 2.4, 1.6);
 
-  const panelMap = paintTexture(256, (g, s) => {
+  const panelMap = makeTexture(256, (g, s) => {
     g.fillStyle = '#c2c0bd';
     g.fillRect(0, 0, s, s);
     g.strokeStyle = '#77777d';
@@ -85,7 +87,7 @@ export function createWorld(scene) {
     g.moveTo(s / 2, 0); g.lineTo(s / 2, s);
     g.moveTo(0, s / 2); g.lineTo(s, s / 2);
     g.stroke();
-    grain(g, s, 350, 'rgba(38,39,45,.15)');
+    speckle(g, s, 350, 'rgba(38,39,45,.15)');
     for (const x of [15, s - 15]) {
       for (const y of [15, s - 15]) {
         g.fillStyle = '#55565c';
@@ -96,7 +98,7 @@ export function createWorld(scene) {
     }
   }, 2, 2);
 
-  const yardMap = paintTexture(512, (g, s) => {
+  const yardMap = makeTexture(512, (g, s) => {
     g.fillStyle = '#aaa7a5';
     g.fillRect(0, 0, s, s);
     g.strokeStyle = '#67666b';
@@ -107,7 +109,7 @@ export function createWorld(scene) {
       g.moveTo(0, i * 64); g.lineTo(s, i * 64);
       g.stroke();
     }
-    grain(g, s, 950, 'rgba(30,28,31,.20)');
+    speckle(g, s, 950, 'rgba(30,28,31,.20)');
     g.strokeStyle = 'rgba(45,40,42,.32)';
     g.lineWidth = 2;
     for (let i = 0; i < 16; i += 1) {
@@ -121,7 +123,7 @@ export function createWorld(scene) {
     }
   }, 6, 4);
 
-  const crateMap = paintTexture(128, (g, s) => {
+  const crateMap = makeTexture(128, (g, s) => {
     g.fillStyle = '#d0c0a8';
     g.fillRect(0, 0, s, s);
     g.fillStyle = '#736554';
@@ -134,7 +136,7 @@ export function createWorld(scene) {
     g.moveTo(18, 15); g.lineTo(s - 18, s - 15);
     g.moveTo(s - 18, 15); g.lineTo(18, s - 15);
     g.stroke();
-    grain(g, s, 90, 'rgba(45,32,26,.18)');
+    speckle(g, s, 90, 'rgba(45,32,26,.18)');
   });
 
   const materials = {
@@ -148,12 +150,13 @@ export function createWorld(scene) {
     ember: new THREE.MeshStandardMaterial({ color: PALETTE.ember, emissive: PALETTE.ember, emissiveIntensity: 2.2, roughness: 0.4 }),
   };
 
+  // One box factory: mesh + ballistic solid + collision AABB, always in sync.
   function block(w, h, d, x, y, z, material = 'concrete', opts = {}) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), materials[material]);
     mesh.position.set(x, y, z);
     mesh.castShadow = opts.castShadow !== false;
     mesh.receiveShadow = true;
-    if (opts.heavy) mesh.userData.heavy = true;
+    if (opts.heavy) mesh.userData.heavy = true; // heavy masonry muffles sound hardest
     root.add(mesh);
     if (opts.solid !== false) solids.push(mesh);
     if (opts.collider !== false) {
@@ -173,8 +176,9 @@ export function createWorld(scene) {
     radarWalls.push([x1, z1, x2, z2]);
   }
 
+  // --- the yard itself -----------------------------------------------------
   block(48, 0.3, 32, 0, -0.15, 0, 'ground', { collider: false, castShadow: false });
-  // Lane paint is real geometry, not a decal download.
+  // Lane paint is real geometry, not a downloaded decal.
   const paint = new THREE.MeshBasicMaterial({ color: '#b76b3f', transparent: true, opacity: 0.52, depthWrite: false });
   for (const x of [-3.55, 3.55]) {
     const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.07, 10), paint);
@@ -189,7 +193,7 @@ export function createWorld(scene) {
   wall(-24, -16, -24, 16, 'concrete');
   wall(24, -16, 24, 16, 'concrete');
 
-  // Mid: fast, exposed, with a broken gate giving three firing angles.
+  // Mid: fast and exposed, with a broken gate giving three firing angles.
   wall(-4, 4, -4, 16);
   wall(4, 4, 4, 16);
   wall(-4, 4, -1.45, 4);
@@ -200,7 +204,7 @@ export function createWorld(scene) {
   block(0.65, 2.5, 0.65, 3.15, 1.25, -3.3, 'steel');
   block(8.2, 0.5, 2.2, 0, 0.25, -12.2, 'concrete');
 
-  // West long wraps a hot kiln and reaches A through two doors.
+  // West long wraps a hot kiln stack and reaches A through two doors.
   wall(-10.5, 2, -10.5, 12, 'brick');
   wall(-18.2, 2, -12.7, 2, 'brick');
   wall(-10.5, 2, -5.2, 2, 'brick');
@@ -278,18 +282,19 @@ export function createWorld(scene) {
 
   // Wayfinding is lit geometry in the world, not UI text.
   const sign = new THREE.Mesh(new THREE.PlaneGeometry(6.6, 1.65), new THREE.MeshBasicMaterial({
-    map: signTexture('EMBERLINE', 'KILNWORKS  /  NIGHT SHIFT  /  YARD 02'), transparent: true,
+    map: bakeSign('EMBERLINE', 'KILNWORKS  /  NIGHT SHIFT  /  YARD 02'), transparent: true,
   }));
   sign.position.set(0, 3.45, 3.74);
   root.add(sign);
   for (const site of SITES) {
     const siteSign = new THREE.Mesh(new THREE.PlaneGeometry(3.3, 0.825), new THREE.MeshBasicMaterial({
-      map: signTexture(`SITE ${site.id}`, site.name), transparent: true,
+      map: bakeSign(`SITE ${site.id}`, site.name), transparent: true,
     }));
     siteSign.position.set(site.x, 2.65, -15.74);
     root.add(siteSign);
   }
 
+  // Ember lamp pools: posts, glowing heads, flickering point lights.
   const lamps = [];
   for (const [x, z] of [[-4.65, 11.8], [4.65, 11.8], [-5.1, -8.2], [5.1, -8.2], [-16, -3.2], [16, -3.2]]) {
     block(0.12, 3.5, 0.12, x, 1.75, z, 'dark', { collider: false });
@@ -301,7 +306,7 @@ export function createWorld(scene) {
   }
 
   // Procedural dusk dome with deterministic ember-stars.
-  const skyMap = paintTexture(1024, (g, s) => {
+  const skyMap = makeTexture(1024, (g, s) => {
     const gradient = g.createLinearGradient(0, 0, 0, s);
     gradient.addColorStop(0, '#101724');
     gradient.addColorStop(0.45, '#303245');

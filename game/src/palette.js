@@ -1,5 +1,6 @@
-// The whole colour voice of Emberline: fired clay and ember light over
-// blue-black night steel. HUD CSS mirrors these values in index.html.
+// Emberline's color language in one place: ember orange and fired clay over a
+// blue-black night yard. The stylesheet in index.html mirrors these values, so
+// changing a swatch here and there keeps the 3D world and the DOM in tune.
 export const PALETTE = Object.freeze({
   night: '#10141b',
   dusk: '#252936',
@@ -17,6 +18,8 @@ export const PALETTE = Object.freeze({
   danger: '#ee5f46',
 });
 
+// Small convenience for places that accept either a palette key or a raw CSS
+// color: named keys resolve, anything else passes straight through.
 export function swatch(name) {
   return PALETTE[name] || name;
 }

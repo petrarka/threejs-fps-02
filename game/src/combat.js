@@ -1,9 +1,10 @@
-// Ballistic primitives and combatant meshes shared by both teams. The ray
-// tests are exact (sphere, capped cylinder), not closest-approach guesses, so
-// a head sphere plus a body capsule behave like honest hitboxes.
+// Ballistic primitives and the shared combatant silhouette. The ray tests are
+// exact (sphere, capped cylinder), not closest-approach guesses, so a head
+// sphere plus a body capsule behave like honest hitboxes for both teams.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
+// Distance along `dir` where the ray first meets the sphere, or Infinity.
 export function raySphere(origin, dir, center, radius) {
   const ox = center.x - origin.x;
   const oy = center.y - origin.y;
@@ -20,6 +21,7 @@ export function raySphere(origin, dir, center, radius) {
   return far >= 0 ? far : Infinity;
 }
 
+// Ray vs. a vertical cylinder wall segment between yLow and yHigh.
 function rayWallCylinder(origin, dir, x, z, yLow, yHigh, radius) {
   const relX = origin.x - x;
   const relZ = origin.z - z;
@@ -39,7 +41,8 @@ function rayWallCylinder(origin, dir, x, z, yLow, yHigh, radius) {
   return best;
 }
 
-// Vertical capsule = cylinder body + two hemisphere caps, tested as three pieces.
+// A standing body as a vertical capsule: cylinder body plus two hemisphere
+// caps, tested as three exact pieces and reduced to the nearest hit.
 export function rayBodyCapsule(origin, dir, x, feetY, z, height, radius = 0.29) {
   const r = Math.min(radius, height * 0.25);
   const low = feetY + r;
@@ -52,16 +55,17 @@ export function rayBodyCapsule(origin, dir, x, feetY, z, height, radius = 0.29) 
 }
 
 const eyePoint = new THREE.Vector3();
-const aimDir = new THREE.Vector3();
+const sightDir = new THREE.Vector3();
 
-// True when a straight ear/eye line between two points crosses no world solid.
+// True when a straight line between two points crosses no world solid. Used
+// for vision, blast cover and (at a different height) hearing.
 export function clearSight(ray, solids, ax, ay, az, bx, by, bz, slack = 0.15) {
   eyePoint.set(ax, ay, az);
-  aimDir.set(bx - ax, by - ay, bz - az);
-  const span = aimDir.length();
+  sightDir.set(bx - ax, by - ay, bz - az);
+  const span = sightDir.length();
   if (span < 0.001) return true;
-  aimDir.divideScalar(span);
-  ray.set(eyePoint, aimDir);
+  sightDir.divideScalar(span);
+  ray.set(eyePoint, sightDir);
   ray.far = span;
   const hit = ray.intersectObjects(solids, false)[0];
   return !hit || hit.distance >= span - slack;
@@ -121,7 +125,8 @@ export function makeCharacter(scene, team, accentName) {
   return { group, torso, head, leftLeg, rightLeg, gun, muzzle, trim };
 }
 
-// A ring-buffer of fading line segments: cheap, deterministic tracers.
+// A ring buffer of fading line segments: cheap, deterministic tracers shared
+// by the player, the crew and the guard squad.
 export function createTracerPool(scene, tint, count = 18, lifetime = 0.11) {
   const slots = [];
   for (let i = 0; i < count; i += 1) {

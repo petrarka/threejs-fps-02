@@ -1,5 +1,6 @@
 // FIREPOT HE grenades: thrown clay vessels with gravity, sphere/AABB bounces
-// and a timed kilnwash burst. Damage events are queued for the match to apply.
+// and a timed kilnwash burst. Damage events are queued for the match loop to
+// apply, so this module never touches health directly.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
@@ -49,6 +50,8 @@ export function createGrenades(scene, world) {
     return true;
   }
 
+  // Queue the damage event and spawn the kilnwash: an additive core, a
+  // wireframe cage, a ground shock ring and a fast-fading point light.
   function detonate(pot) {
     const p = pot.group.position;
     detonations.push({ x: p.x, y: p.y, z: p.z });
@@ -76,6 +79,8 @@ export function createGrenades(scene, world) {
     bursts.push({ core, cage, ring, light, life: 0.48, total: 0.48 });
   }
 
+  // Sphere-vs-AABB resolution: reject along the axis with the smallest
+  // correction from the pre-step position, reflect with clay damping.
   function collide(pot, previous) {
     const p = pot.group.position;
     const r = 0.105;
@@ -90,7 +95,6 @@ export function createGrenades(scene, world) {
       if (p.x < box.min.x - r || p.x > box.max.x + r
         || p.y < box.min.y - r || p.y > box.max.y + r
         || p.z < box.min.z - r || p.z > box.max.z + r) continue;
-      // Reject along the axis with the smallest correction from the safe point.
       const pushX = Math.min(Math.abs(p.x - (box.min.x - r)), Math.abs(p.x - (box.max.x + r)));
       const pushZ = Math.min(Math.abs(p.z - (box.min.z - r)), Math.abs(p.z - (box.max.z + r)));
       if (pushX < pushZ) {

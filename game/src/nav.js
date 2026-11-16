@@ -1,18 +1,22 @@
-// The yard's shared navigation layer: one rasterised walkability grid, an
-// eight-way A* with a binary-heap open list, no diagonal corner cutting, and
-// string-pulled waypoints. Guards and crew both route through this grid.
+// The yard's shared navigation layer: one rasterised walkability grid baked
+// from the same colliders the renderer uses, an eight-way A* over a binary
+// heap, no diagonal corner cutting, and string-pulled waypoints. Guards and
+// crew both route through this single grid.
 const CELL = 0.75;
 const COLS = 64;
 const ROWS = 44;
 const ORIGIN_X = -24;
 const ORIGIN_Z = -16.5;
-const CLEARANCE = 0.31;
+const CLEARANCE = 0.31; // half a body, so paths keep shoulders off the brick
 
-const at = (x, z) => z * COLS + x;
-const clamp = (v, max) => Math.max(0, Math.min(max - 1, v));
+const indexOf = (x, z) => z * COLS + x;
+const clampAxis = (v, max) => Math.max(0, Math.min(max - 1, v));
 
 export function toCell(x, z) {
-  return [clamp(Math.floor((x - ORIGIN_X) / CELL), COLS), clamp(Math.floor((z - ORIGIN_Z) / CELL), ROWS)];
+  return [
+    clampAxis(Math.floor((x - ORIGIN_X) / CELL), COLS),
+    clampAxis(Math.floor((z - ORIGIN_Z) / CELL), ROWS),
+  ];
 }
 
 export function cellCenter(cx, cz) {
@@ -40,16 +44,17 @@ export function createNav(world) {
     for (let cz = cz0; cz <= cz1; cz += 1) {
       for (let cx = cx0; cx <= cx1; cx += 1) {
         const [wx, wz] = cellCenter(cx, cz);
-        if (wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ) blocked[at(cx, cz)] = 1;
+        if (wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ) blocked[indexOf(cx, cz)] = 1;
       }
     }
   }
 
   function free(x, z) {
     const [cx, cz] = toCell(x, z);
-    return !blocked[at(cx, cz)];
+    return !blocked[indexOf(cx, cz)];
   }
 
+  // Dense sample march between two points; used for string pulling.
   function lineFree(ax, az, bx, bz) {
     const span = Math.hypot(bx - ax, bz - az);
     const samples = Math.max(1, Math.ceil(span / (CELL * 0.4)));
@@ -62,7 +67,7 @@ export function createNav(world) {
 
   function nearestFree(x, z) {
     const [cx, cz] = toCell(x, z);
-    if (!blocked[at(cx, cz)]) return [cx, cz];
+    if (!blocked[indexOf(cx, cz)]) return [cx, cz];
     for (let ring = 1; ring < 8; ring += 1) {
       for (let dz = -ring; dz <= ring; dz += 1) {
         for (let dx = -ring; dx <= ring; dx += 1) {
@@ -70,7 +75,7 @@ export function createNav(world) {
           const nx = cx + dx;
           const nz = cz + dz;
           if (nx < 0 || nz < 0 || nx >= COLS || nz >= ROWS) continue;
-          if (!blocked[at(nx, nz)]) return [nx, nz];
+          if (!blocked[indexOf(nx, nz)]) return [nx, nz];
         }
       }
     }
@@ -124,8 +129,8 @@ export function createNav(world) {
     const from = nearestFree(sx, sz);
     const goal = nearestFree(tx, tz);
     if (!from || !goal) return null;
-    const startIdx = at(from[0], from[1]);
-    const goalIdx = at(goal[0], goal[1]);
+    const startIdx = indexOf(from[0], from[1]);
+    const goalIdx = indexOf(goal[0], goal[1]);
     if (startIdx === goalIdx) return [[tx, tz]];
 
     const gScore = new Float32Array(COLS * ROWS).fill(Infinity);
@@ -167,10 +172,10 @@ export function createNav(world) {
           const nx = cx + dx;
           const nz = cz + dz;
           if (nx < 0 || nz < 0 || nx >= COLS || nz >= ROWS) continue;
-          const next = at(nx, nz);
+          const next = indexOf(nx, nz);
           if (blocked[next] || closed[next]) continue;
           // No squeezing diagonally past a blocked orthogonal neighbour.
-          if (dx && dz && (blocked[at(cx + dx, cz)] || blocked[at(cx, cz + dz)])) continue;
+          if (dx && dz && (blocked[indexOf(cx + dx, cz)] || blocked[indexOf(cx, cz + dz)])) continue;
           const cost = gScore[current] + (dx && dz ? Math.SQRT2 : 1);
           if (cost >= gScore[next]) continue;
           gScore[next] = cost;

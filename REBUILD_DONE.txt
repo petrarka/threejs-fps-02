@@ -1,6 +1,6 @@
-REBUILD COMPLETE — Emberline (threejs-fps-02)
-1. Rewrote all 20 game/src modules by hand this session: config, palette, world, nav, combat, player, input, weapon, grenade, bomb, economy, rounds, hearing, targets, radar, sound, hud, bots, mates, main.
-2. Navigation rebuilt with a binary-heap 8-way A* (was a linear open-list scan); combat maths kept exact — head sphere + capped-cylinder capsule hitboxes, raycast sight and wall-muffled hearing.
-3. Kept every system: round clock to first-to-8, plant/defuse Ember objective, 5-slot buy menu plus COIL-9/Longsight purchases, fixed recoil patterns + heat spread, FIREPOT arc/bounce/fuse, 9 named guards, 3 autonomous mates with per-combatant K/D/DMG board.
-4. Verified all nine deterministic shot modes (?shot=start|play|plant|end|bots|buy|match|nade|radar) render cleanly headless at seed=1 — HUD, radar, shop, roster, scope and burst all read correctly.
-5. No vendor/, badge or license changes; no new assets — still fully procedural (canvas textures, WebAudio synth) with zero runtime network use.
+REBUILD DONE — Emberline (threejs-fps-02)
+1. Re-authored every source file this session: main.ts entrypoint plus all 19 game/src modules and game/index.html, hand-written fresh.
+2. Kept the full spec: round-based FPS (first to 8), Ember plant/defuse objective, economy + 5-slot kit + 2 buyable primaries, scoped Longsight (74→32 FOV).
+3. Systems intact: shared A* nav grid with string pulling, guard hearing with wall-muffling raycasts, capsule hitboxes, recoil patterns, FIREPOT grenade, crew-mate AI (Tally/Mason/Brack).
+4. Verified headlessly: `node main.ts` writes a valid deterministic dossier (two runs diff clean); all 9 shot modes (start/play/plant/end/bots/buy/match/nade/radar) rendered and read.
+5. Pass-2 refinement: entrypoint now reports the handed-in tree (file/screenshot counts); no gameplay regressions observed in the screenshots.

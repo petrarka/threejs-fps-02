@@ -1,5 +1,6 @@
-// Kinematic first-person body: axis-separated AABB sweeps so walls, kiln cores
-// and crates stay solid at any frame rate, while low kerbs are stepped over.
+// Kinematic first-person body: axis-separated AABB sweeps so walls, kiln
+// cores and crates stay solid at any frame rate, while low kerbs are stepped
+// over automatically.
 import * as THREE from 'three';
 import { SPAWN } from './config.js';
 
@@ -37,6 +38,7 @@ export function createPlayer(colliders) {
     return null;
   }
 
+  // Move along one axis; step up low kerbs, otherwise stop dead.
   function slide(axis, amount) {
     if (!amount) return;
     const nx = state.position.x + (axis === 'x' ? amount : 0);
@@ -76,7 +78,7 @@ export function createPlayer(colliders) {
     const pace = state.crouched ? SPEED_CROUCH : SPEED_RUN;
     const wishX = (-sin * f + cos * s) * pace;
     const wishZ = (-cos * f - sin * s) * pace;
-    const grip = state.grounded ? 18 : 3.5;
+    const grip = state.grounded ? 18 : 3.5; // air control is deliberately weak
     state.velocity.x = THREE.MathUtils.damp(state.velocity.x, wishX, grip, dt);
     state.velocity.z = THREE.MathUtils.damp(state.velocity.z, wishZ, grip, dt);
 

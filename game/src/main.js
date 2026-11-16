@@ -1,5 +1,5 @@
-// Emberline entry point: one seeded fixed-step simulation, one renderer and a
-// deterministic shot director. Ordinary play and screenshot scenes share the
+// Emberline entry point: one seeded fixed-step simulation, one renderer, and
+// a deterministic shot director. Ordinary play and screenshot scenes share the
 // same movement, combat, objective and round code — nothing is faked for shots.
 import * as THREE from 'three';
 import { FOV_NORMAL, TICK, FOV_SCOPED, SHOTS } from './config.js';
@@ -24,7 +24,7 @@ const params = new URLSearchParams(location.search);
 const requested = params.get('shot');
 const shot = SHOTS.includes(requested) ? requested : null;
 
-// Seedable xorshift-flavoured RNG so shot scenes and tracers are reproducible.
+// Seedable mulberry-style RNG so shot scenes and tracers are reproducible.
 let rngState = Number.parseInt(params.get('seed') || '1', 10) || 1;
 function random() {
   rngState |= 0;
@@ -34,6 +34,7 @@ function random() {
   return ((v ^ (v >>> 14)) >>> 0) / 4294967296;
 }
 
+// --- renderer, scene, camera ------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
@@ -48,6 +49,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(FOV_NORMAL, innerWidth / innerHeight, 0.05, 150);
 scene.add(camera);
 
+// --- systems ---------------------------------------------------------------
 const world = createWorld(scene);
 const nav = createNav(world);
 const targets = createTargets(scene);
@@ -79,6 +81,7 @@ const muzzlePoint = new THREE.Vector3();
 const fireOrigin = new THREE.Vector3();
 const shootables = [...world.solids, ...bots.hitMeshes, ...targets.hitMeshes];
 
+// --- match bookkeeping -------------------------------------------------------
 let hp = 100;
 let playerAlive = true;
 let kills = 0;
@@ -100,17 +103,6 @@ function liveNow() {
   return shot ? shotLive : rounds.state.phase === 'live' && !roundEnded && playerAlive;
 }
 
-function boardSnapshot(status) {
-  return {
-    rounds: rounds.state,
-    player: { name: 'YOU', kills, deaths, dmg: damageDone },
-    playerAlive,
-    mates: mates.items,
-    guards: bots.items,
-    status,
-  };
-}
-
 function syncCamera() {
   const bob = playerAlive && body.grounded ? Math.sin(body.bob * 2) * Math.min(0.018, player.speed() * 0.0035) : 0;
   camera.position.set(body.position.x, body.position.y + body.eye + bob, body.position.z);
@@ -125,6 +117,17 @@ function aimAt(point) {
   body.yaw = Math.atan2(-dx, -dz);
   body.pitch = Math.atan2(dy, Math.hypot(dx, dz));
   syncCamera();
+}
+
+function boardSnapshot(status) {
+  return {
+    rounds: rounds.state,
+    player: { name: 'YOU', kills, deaths, dmg: damageDone },
+    playerAlive,
+    mates: mates.items,
+    guards: bots.items,
+    status,
+  };
 }
 
 function showBoard(status) {
@@ -145,6 +148,7 @@ function setShop(open) {
   }
 }
 
+// --- round lifecycle ---------------------------------------------------------
 function resetRound() {
   hp = 100;
   playerAlive = true;
@@ -157,7 +161,7 @@ function resetRound() {
   bomb.reset();
   const carried = economy.grenadeCount();
   economy.grenades.reset();
-  economy.grenades.state.count = carried;
+  economy.grenades.state.count = carried; // pots survive the round turnover
   weapon.beginRound();
   playerTracers.reset();
   hud.clearFeed();
@@ -209,6 +213,7 @@ function finishRound(crewWon, reason) {
   }
 }
 
+// --- combat wiring -----------------------------------------------------------
 function onPlayerHit(rawAmount, part, guard) {
   if (!liveNow() || !playerAlive || shot) return false;
   const amount = economy.mitigate(rawAmount, part);
@@ -251,6 +256,8 @@ function throwFirepot() {
   }
 }
 
+// One player trigger pull: recoil pattern, spread cone, exact hitscan,
+// tracer, hit feedback, and the noise report every guard can hear.
 function fireWeapon() {
   if (!liveNow() || !weapon.ready()) return false;
   const impulse = weapon.fire(random);
@@ -318,6 +325,7 @@ function applyExplosion(blast) {
   sound.explosion();
 }
 
+// --- the fixed-step simulation ----------------------------------------------
 function simulate(dt) {
   time += dt;
   if (!shot) {
@@ -344,6 +352,7 @@ function simulate(dt) {
   mates.step(dt, time, body, bomb, random, active);
   for (const blast of economy.takeExplosions()) applyExplosion(blast);
 
+  // The objective: your E, or Mason's quiet-lane plant, against the guards.
   const holdingUse = active && input.state.keys.has('KeyE');
   const mason = holdingUse ? null : mates.planter();
   const actor = holdingUse ? body.position : mason ? mason.group.position : body.position;
@@ -380,6 +389,7 @@ function simulate(dt) {
   hud.step(dt);
 }
 
+// --- presentation ------------------------------------------------------------
 function phaseText() {
   if (shot) return null;
   if (rounds.state.phase === 'buy') {
@@ -388,6 +398,13 @@ function phaseText() {
   }
   if (rounds.state.phase === 'over') return roundMessage;
   return null;
+}
+
+function shotClock() {
+  if (shot === 'play') return 94;
+  if (shot === 'plant' || shot === 'radar') return 38;
+  if (shot === 'bots' || shot === 'nade') return 71;
+  return rounds.state.clock;
 }
 
 function updatePresentation(dt) {
@@ -410,16 +427,10 @@ function updatePresentation(dt) {
   hud.setWeapon(weapon, economy.grenadeCount());
 }
 
-function shotClock() {
-  if (shot === 'play') return 94;
-  if (shot === 'plant' || shot === 'radar') return 38;
-  if (shot === 'bots' || shot === 'nade') return 71;
-  return rounds.state.clock;
-}
-
+// --- input ------------------------------------------------------------------
 function handleInput() {
   const look = input.consumeLook();
-  player.look(look.x, look.y, aiming ? 0.38 : 1);
+  player.look(look.x, look.y, aiming ? 0.38 : 1); // scoped: low-sensitivity aim
   if (input.consumeKey('KeyM')) {
     hud.notify(sound.toggleMute() ? 'AUDIO MUTED' : 'AUDIO ON');
   }
@@ -458,6 +469,7 @@ hud.onPlay(() => {
   if (!shot) input.requestLock();
 });
 
+// --- the frame loop -----------------------------------------------------------
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.1, Math.max(0, (now - previousNow) / 1000));
@@ -491,6 +503,7 @@ function frame(now) {
   renderer.render(scene, camera);
 }
 
+// --- the deterministic shot director ------------------------------------------
 function settle(steps) {
   for (let i = 0; i < steps; i += 1) simulate(TICK);
 }

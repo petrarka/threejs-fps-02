@@ -1,6 +1,6 @@
-// A small WebAudio instrument rack. No files, fetches or decoded assets: every
-// report, impact, fuse tick and interface cue is synthesized on the fly after
-// the first user gesture unlocks the context.
+// A small WebAudio instrument rack. No files, fetches or decoded assets:
+// every report, impact, fuse tick and interface cue is synthesized on the fly
+// after the first user gesture unlocks the context.
 let ctx = null;
 let bus = null;
 let noiseBuf = null;
@@ -21,6 +21,7 @@ function ensure() {
   bus.connect(limiter);
   limiter.connect(ctx.destination);
 
+  // One second of xorshift white noise, sampled at random offsets per cue.
   noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
   const data = noiseBuf.getChannelData(0);
   let state = 0x41c6ce57;

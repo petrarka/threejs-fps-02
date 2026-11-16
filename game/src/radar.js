@@ -15,7 +15,7 @@ export function createRadar(canvas, world) {
   const px = (value) => PAD + (value + 24) * SCALE;
   const py = (value) => PAD + (value + 16) * SCALE;
 
-  // Static underlay: grid, sites, wall plan, north tick.
+  // Static underlay: grid, sites, wall plan, north tick — painted once.
   const base = document.createElement('canvas');
   base.width = base.height = SIZE;
   const g = base.getContext('2d');

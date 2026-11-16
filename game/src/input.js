@@ -1,5 +1,7 @@
-// Pointer-lock input. The simulation only ever sees this small state object;
-// every DOM and vendor detail is quarantined here.
+// Pointer-lock input. The rest of the game only ever reads the small state
+// object this module exposes; every DOM and pointer-lock quirk is quarantined
+// here, including the inject/release hooks the deterministic shot scenes use
+// to drive keys without a keyboard.
 export function createInput(canvas, onLockChange) {
   const held = new Set();
   const tapped = new Set();
@@ -82,7 +84,7 @@ export function createInput(canvas, onLockChange) {
       return true;
     },
     endFrame() { tapped.clear(); },
-    // Shot-mode hooks: deterministic scenes drive keys without a real keyboard.
+    // Shot-director hooks: deterministic scenes drive keys with no keyboard.
     injectKey(code) {
       held.add(code);
       tapped.add(code);
