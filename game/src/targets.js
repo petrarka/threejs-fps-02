@@ -1,70 +1,101 @@
-// Clay calibration marks along the north wall: optional aim references with
-// real head/body hit meshes that shatter-fall when shot out. They are range
-// furniture, never a round objective.
-import * as THREE from 'three';
-import { PALETTE } from './palette.js';
+// targets.js — the registry of everything a bullet can hurt. Every fighter
+// (you, your three mates, nine guards) registers a capsule here: a head
+// sphere on top of a body cylinder. raycast() tests a ray against all of
+// them; hitscan() combines that with the world so a wall still wins if it's
+// closer than the guard behind it.
 
-export function createTargets(scene) {
-  const items = [];
-  const hitMeshes = [];
-  const clay = new THREE.MeshStandardMaterial({ color: '#a65b40', roughness: 0.88 });
-  const ink = new THREE.MeshStandardMaterial({ color: PALETTE.paper, roughness: 0.8 });
-  const stand = new THREE.MeshStandardMaterial({ color: '#24282e', metalness: 0.35, roughness: 0.7 });
+export class Targets {
+  constructor(world) {
+    this.world = world;
+    this.list = [];
+    this._nextId = 1;
+  }
 
-  [-9, -3, 3, 9].forEach((x, index) => {
-    const group = new THREE.Group();
-    group.position.set(x, 0, -15.35);
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.15, 0.09), stand);
-    post.position.y = 0.58;
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.66, 0.12), clay);
-    torso.position.y = 1.03;
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 12, 8), clay);
-    head.position.y = 1.54;
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.1, 0.125, 20), ink);
-    ring.position.set(0, 1.05, 0.066);
-    group.add(post, torso, head, ring);
-    group.traverse((node) => {
-      if (node.isMesh) node.castShadow = true;
-    });
-    scene.add(group);
-    const item = { group, torso, head, health: 60, alive: true, phase: index * 1.2 };
-    torso.userData = { kind: 'target', part: 'body', owner: item };
-    head.userData = { kind: 'target', part: 'head', owner: item };
-    items.push(item);
-    hitMeshes.push(torso, head);
-  });
+  // entity: {name, team, pos:{x,y,z} (feet), radius, height, alive, stats}
+  register(entity) {
+    entity.hitId = this._nextId++;
+    this.list.push(entity);
+    return entity;
+  }
 
-  return {
-    items,
-    hitMeshes,
-    damage(mesh, amount) {
-      const item = mesh.userData.owner;
-      if (!item || !item.alive) return { killed: false, damage: 0, item };
-      const dealt = Math.min(item.health, amount);
-      item.health -= dealt;
-      if (item.health <= 0) {
-        item.alive = false;
-        item.group.rotation.x = -1.35;
-        return { killed: true, damage: dealt, item };
+  alive(team) {
+    return this.list.filter((e) => e.alive && (!team || e.team === team));
+  }
+
+  reset() {
+    this.list.length = 0;
+  }
+
+  // ray vs head sphere; returns t or -1
+  _sphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, r, maxT) {
+    const lx = cx - ox, ly = cy - oy, lz = cz - oz;
+    const tca = lx * dx + ly * dy + lz * dz;
+    if (tca < 0) return -1;
+    const d2 = lx * lx + ly * ly + lz * lz - tca * tca;
+    const r2 = r * r;
+    if (d2 > r2) return -1;
+    const thc = Math.sqrt(r2 - d2);
+    const t = tca - thc;
+    return t > 0.0001 && t < maxT ? t : -1;
+  }
+
+  // ray vs vertical cylinder around (px,pz) from y0..y1; returns t or -1
+  _cylinder(ox, oy, oz, dx, dy, dz, px, y0, y1, pz, r, maxT) {
+    const a = dx * dx + dz * dz;
+    if (a < 1e-9) return -1;
+    const fx = ox - px, fz = oz - pz;
+    const b = 2 * (fx * dx + fz * dz);
+    const c = fx * fx + fz * fz - r * r;
+    const disc = b * b - 4 * a * c;
+    if (disc < 0) return -1;
+    const sq = Math.sqrt(disc);
+    for (const t of [(-b - sq) / (2 * a), (-b + sq) / (2 * a)]) {
+      if (t > 0.0001 && t < maxT) {
+        const y = oy + dy * t;
+        if (y >= y0 && y <= y1) return t;
       }
-      return { killed: false, damage: dealt, item };
-    },
-    step(time) {
-      // Idle sway keeps the range visibly alive between rounds.
-      for (const item of items) {
-        if (item.alive) item.group.rotation.y = Math.sin(time * 0.7 + item.phase) * 0.08;
+    }
+    return -1;
+  }
+
+  // nearest entity hit along the ray (ignores same team + the shooter)
+  raycast(ox, oy, oz, dx, dy, dz, maxT, { team = null, exclude = null } = {}) {
+    let best = null;
+    for (const e of this.list) {
+      if (!e.alive || e === exclude || (team && e.team === team)) continue;
+      const headY = e.pos.y + e.height - 0.18;
+      const th = this._sphere(ox, oy, oz, dx, dy, dz, e.pos.x, headY, e.pos.z, 0.22, maxT);
+      if (th > 0 && (!best || th < best.t)) {
+        best = { t: th, entity: e, part: 'head' };
+        continue;
       }
-    },
-    reset() {
-      for (const item of items) {
-        item.health = 60;
-        item.alive = true;
-        item.group.rotation.set(0, 0, 0);
-      }
-    },
-    aimPoint(index) {
-      const item = items[index % items.length];
-      return new THREE.Vector3(item.group.position.x, 1.05, item.group.position.z);
-    },
-  };
+      const tb = this._cylinder(ox, oy, oz, dx, dy, dz, e.pos.x, e.pos.y + 0.1, e.pos.y + e.height - 0.3, e.pos.z, e.radius, maxT);
+      if (tb > 0 && (!best || tb < best.t)) best = { t: tb, entity: e, part: 'body' };
+    }
+    if (best) {
+      best.x = ox + dx * best.t;
+      best.y = oy + dy * best.t;
+      best.z = oz + dz * best.t;
+    }
+    return best;
+  }
+
+  // a true hitscan: walls and bodies compete, nearest wins
+  hitscan(ox, oy, oz, dx, dy, dz, maxT, opts = {}) {
+    const wall = this.world.raycast(ox, oy, oz, dx, dy, dz, maxT);
+    const limit = wall ? wall.t : maxT;
+    const body = this.raycast(ox, oy, oz, dx, dy, dz, limit, opts);
+    if (body) return { kind: 'entity', ...body };
+    if (wall) return { kind: 'wall', t: wall.t, x: wall.x, y: wall.y, z: wall.z, nx: wall.nx, ny: wall.ny, nz: wall.nz };
+    return null;
+  }
+
+  // straight-line visibility between two eyes (for bot vision checks)
+  canSee(x0, y0, z0, x1, y1, z1) {
+    const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (d < 0.001) return true;
+    const wall = this.world.raycast(x0, y0, z0, dx / d, dy / d, dz / d, d - 0.05);
+    return !wall;
+  }
 }

@@ -1,191 +1,163 @@
-// The yard's shared navigation layer: one rasterised walkability grid baked
-// from the same colliders the renderer uses, an eight-way A* over a binary
-// heap, no diagonal corner cutting, and string-pulled waypoints. Guards and
-// crew both route through this single grid.
-const CELL = 0.75;
-const COLS = 64;
-const ROWS = 44;
-const ORIGIN_X = -24;
-const ORIGIN_Z = -16.5;
-const CLEARANCE = 0.31; // half a body, so paths keep shoulders off the brick
+// nav.js — the shared walkability grid and A* pathfinder every bot in the
+// yard uses (guards and crew mates alike). Binary-heap open set, octile
+// heuristic, no corner cutting, then string pulling over a line-of-sight
+// function so paths hug the lanes instead of stair-stepping.
 
-const indexOf = (x, z) => z * COLS + x;
-const clampAxis = (v, max) => Math.max(0, Math.min(max - 1, v));
-
-export function toCell(x, z) {
-  return [
-    clampAxis(Math.floor((x - ORIGIN_X) / CELL), COLS),
-    clampAxis(Math.floor((z - ORIGIN_Z) / CELL), ROWS),
-  ];
-}
-
-export function cellCenter(cx, cz) {
-  return [ORIGIN_X + (cx + 0.5) * CELL, ORIGIN_Z + (cz + 0.5) * CELL];
-}
-
-// Octile distance: admissible for 8-way grids with sqrt2 diagonals.
-function octile(ax, az, bx, bz) {
-  const dx = Math.abs(ax - bx);
-  const dz = Math.abs(az - bz);
-  return Math.max(dx, dz) + (Math.SQRT2 - 1) * Math.min(dx, dz);
-}
-
-export function createNav(world) {
-  const blocked = new Uint8Array(COLS * ROWS);
-  for (const box of world.colliders) {
-    // Only obstacles that intersect a standing silhouette block a cell.
-    if (box.max.y <= 0.56 || box.min.y > 1.7) continue;
-    const minX = box.min.x - CLEARANCE;
-    const maxX = box.max.x + CLEARANCE;
-    const minZ = box.min.z - CLEARANCE;
-    const maxZ = box.max.z + CLEARANCE;
-    const [cx0, cz0] = toCell(minX, minZ);
-    const [cx1, cz1] = toCell(maxX, maxZ);
-    for (let cz = cz0; cz <= cz1; cz += 1) {
-      for (let cx = cx0; cx <= cx1; cx += 1) {
-        const [wx, wz] = cellCenter(cx, cz);
-        if (wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ) blocked[indexOf(cx, cz)] = 1;
+class MinHeap {
+  constructor() { this.items = []; this.keys = []; }
+  get size() { return this.items.length; }
+  push(item, key) {
+    const items = this.items, keys = this.keys;
+    let i = items.length;
+    items.push(item); keys.push(key);
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (keys[p] <= keys[i]) break;
+      [items[p], items[i]] = [items[i], items[p]];
+      [keys[p], keys[i]] = [keys[i], keys[p]];
+      i = p;
+    }
+  }
+  pop() {
+    const items = this.items, keys = this.keys;
+    const top = items[0];
+    const lastItem = items.pop(), lastKey = keys.pop();
+    if (items.length) {
+      items[0] = lastItem; keys[0] = lastKey;
+      let i = 0;
+      for (;;) {
+        const l = i * 2 + 1, r = l + 1;
+        let m = i;
+        if (l < items.length && keys[l] < keys[m]) m = l;
+        if (r < items.length && keys[r] < keys[m]) m = r;
+        if (m === i) break;
+        [items[m], items[i]] = [items[i], items[m]];
+        [keys[m], keys[i]] = [keys[i], keys[m]];
+        i = m;
       }
     }
+    return top;
   }
+}
 
-  function free(x, z) {
-    const [cx, cz] = toCell(x, z);
-    return !blocked[indexOf(cx, cz)];
-  }
-
-  // Dense sample march between two points; used for string pulling.
-  function lineFree(ax, az, bx, bz) {
-    const span = Math.hypot(bx - ax, bz - az);
-    const samples = Math.max(1, Math.ceil(span / (CELL * 0.4)));
-    for (let i = 0; i <= samples; i += 1) {
-      const t = i / samples;
-      if (!free(ax + (bx - ax) * t, az + (bz - az) * t)) return false;
+export class NavGrid {
+  // opts: minX,minZ,maxX,maxZ in metres; cell size; blocked(x,z)->bool at cell
+  // centre; los(x0,z0,x1,z1)->bool for string pulling (entity-aware not needed)
+  constructor({ minX, minZ, maxX, maxZ, cell = 1, blocked, los }) {
+    this.minX = minX; this.minZ = minZ;
+    this.cell = cell;
+    this.cols = Math.max(2, Math.floor((maxX - minX) / cell));
+    this.rows = Math.max(2, Math.floor((maxZ - minZ) / cell));
+    this.los = los;
+    const n = this.cols * this.rows;
+    this.blocked = new Uint8Array(n);
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const x = minX + (c + 0.5) * cell;
+        const z = minZ + (r + 0.5) * cell;
+        this.blocked[r * this.cols + c] = blocked(x, z) ? 1 : 0;
+      }
     }
-    return true;
+    // scratch buffers reused between queries (no per-call allocation storms)
+    this._g = new Float32Array(n);
+    this._f = new Float32Array(n);
+    this._came = new Int32Array(n);
+    this._state = new Uint8Array(n); // 0 unseen, 1 open, 2 closed
+    this._heap = new MinHeap();
   }
 
-  function nearestFree(x, z) {
-    const [cx, cz] = toCell(x, z);
-    if (!blocked[indexOf(cx, cz)]) return [cx, cz];
-    for (let ring = 1; ring < 8; ring += 1) {
-      for (let dz = -ring; dz <= ring; dz += 1) {
-        for (let dx = -ring; dx <= ring; dx += 1) {
-          if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
-          const nx = cx + dx;
-          const nz = cz + dz;
-          if (nx < 0 || nz < 0 || nx >= COLS || nz >= ROWS) continue;
-          if (!blocked[indexOf(nx, nz)]) return [nx, nz];
+  idx(c, r) { return r * this.cols + c; }
+  cellX(c) { return this.minX + (c + 0.5) * this.cell; }
+  cellZ(r) { return this.minZ + (r + 0.5) * this.cell; }
+  colOf(x) { return Math.max(0, Math.min(this.cols - 1, Math.floor((x - this.minX) / this.cell))); }
+  rowOf(z) { return Math.max(0, Math.min(this.rows - 1, Math.floor((z - this.minZ) / this.cell))); }
+
+  isWalkable(x, z) { return !this.blocked[this.idx(this.colOf(x), this.rowOf(z))]; }
+
+  // spiral out from the wanted cell until a free one turns up
+  nearestWalkable(x, z) {
+    let c0 = this.colOf(x), r0 = this.rowOf(z);
+    if (!this.blocked[this.idx(c0, r0)]) return { x, z };
+    for (let ring = 1; ring < Math.max(this.cols, this.rows); ring++) {
+      for (let dr = -ring; dr <= ring; dr++) {
+        for (let dc = -ring; dc <= ring; dc++) {
+          if (Math.max(Math.abs(dr), Math.abs(dc)) !== ring) continue;
+          const c = c0 + dc, r = r0 + dr;
+          if (c < 0 || r < 0 || c >= this.cols || r >= this.rows) continue;
+          if (!this.blocked[this.idx(c, r)]) return { x: this.cellX(c), z: this.cellZ(r) };
         }
       }
     }
     return null;
   }
 
-  // Minimal binary heap keyed by f-score; keeps long yard routes cheap.
-  function makeHeap() {
-    const keys = [];
-    const vals = [];
-    return {
-      size: () => keys.length,
-      push(key, val) {
-        keys.push(key);
-        vals.push(val);
-        let i = keys.length - 1;
-        while (i > 0) {
-          const parent = (i - 1) >> 1;
-          if (vals[parent] <= vals[i]) break;
-          [keys[parent], keys[i]] = [keys[i], keys[parent]];
-          [vals[parent], vals[i]] = [vals[i], vals[parent]];
-          i = parent;
-        }
-      },
-      pop() {
-        const top = keys[0];
-        const lastKey = keys.pop();
-        const lastVal = vals.pop();
-        if (keys.length) {
-          keys[0] = lastKey;
-          vals[0] = lastVal;
-          let i = 0;
-          for (;;) {
-            const left = i * 2 + 1;
-            const right = left + 1;
-            let small = i;
-            if (left < keys.length && vals[left] < vals[small]) small = left;
-            if (right < keys.length && vals[right] < vals[small]) small = right;
-            if (small === i) break;
-            [keys[small], keys[i]] = [keys[i], keys[small]];
-            [vals[small], vals[i]] = [vals[i], vals[small]];
-            i = small;
-          }
-        }
-        return top;
-      },
+  findPath(sx, sz, tx, tz) {
+    const start = this.nearestWalkable(sx, sz);
+    const goal = this.nearestWalkable(tx, tz);
+    if (!start || !goal) return null;
+    const sc = this.colOf(start.x), sr = this.rowOf(start.z);
+    const gc = this.colOf(goal.x), gr = this.rowOf(goal.z);
+    const si = this.idx(sc, sr), gi = this.idx(gc, gr);
+    if (si === gi) return [{ x: tx, z: tz }];
+
+    const { _g: g, _f: f, _came: came, _state: state, _heap: heap } = this;
+    state.fill(0);
+    const cols = this.cols;
+    const h = (i) => {
+      const dc = Math.abs((i % cols) - gc), dr = Math.abs(((i / cols) | 0) - gr);
+      const m = Math.min(dc, dr);
+      return (dc + dr - m) + m * 1.41421356; // octile
     };
-  }
+    heap.size && (heap.items.length = 0, heap.keys.length = 0);
+    g[si] = 0; f[si] = h(si); came[si] = -1; state[si] = 1;
+    heap.push(si, f[si]);
 
-  function path(sx, sz, tx, tz) {
-    const from = nearestFree(sx, sz);
-    const goal = nearestFree(tx, tz);
-    if (!from || !goal) return null;
-    const startIdx = indexOf(from[0], from[1]);
-    const goalIdx = indexOf(goal[0], goal[1]);
-    if (startIdx === goalIdx) return [[tx, tz]];
-
-    const gScore = new Float32Array(COLS * ROWS).fill(Infinity);
-    const parent = new Int32Array(COLS * ROWS).fill(-1);
-    const closed = new Uint8Array(COLS * ROWS);
-    const open = makeHeap();
-    gScore[startIdx] = 0;
-    open.push(startIdx, octile(from[0], from[1], goal[0], goal[1]));
-
-    while (open.size()) {
-      const current = open.pop();
-      if (closed[current]) continue;
-      if (current === goalIdx) {
-        const cells = [];
-        for (let cursor = current; cursor !== -1; cursor = parent[cursor]) {
-          cells.push(cellCenter(cursor % COLS, Math.floor(cursor / COLS)));
-        }
-        cells.reverse();
-        cells[0] = [sx, sz];
-        cells.push([tx, tz]);
-        // String pulling: drop every waypoint visible from an earlier anchor.
-        const route = [cells[0]];
-        let anchor = 0;
-        for (let i = 2; i < cells.length; i += 1) {
-          if (!lineFree(cells[anchor][0], cells[anchor][1], cells[i][0], cells[i][1])) {
-            route.push(cells[i - 1]);
-            anchor = i - 1;
-          }
-        }
-        route.push(cells[cells.length - 1]);
-        return route;
-      }
-      closed[current] = 1;
-      const cx = current % COLS;
-      const cz = Math.floor(current / COLS);
-      for (let dz = -1; dz <= 1; dz += 1) {
-        for (let dx = -1; dx <= 1; dx += 1) {
-          if (!dx && !dz) continue;
-          const nx = cx + dx;
-          const nz = cz + dz;
-          if (nx < 0 || nz < 0 || nx >= COLS || nz >= ROWS) continue;
-          const next = indexOf(nx, nz);
-          if (blocked[next] || closed[next]) continue;
-          // No squeezing diagonally past a blocked orthogonal neighbour.
-          if (dx && dz && (blocked[indexOf(cx + dx, cz)] || blocked[indexOf(cx, cz + dz)])) continue;
-          const cost = gScore[current] + (dx && dz ? Math.SQRT2 : 1);
-          if (cost >= gScore[next]) continue;
-          gScore[next] = cost;
-          parent[next] = current;
-          open.push(next, cost + octile(nx, nz, goal[0], goal[1]));
-        }
+    const DIRS = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1],
+                  [1, 1, 1.41421356], [1, -1, 1.41421356], [-1, 1, 1.41421356], [-1, -1, 1.41421356]];
+    let found = false;
+    let guard = this.cols * this.rows * 4;
+    while (heap.size && guard-- > 0) {
+      const cur = heap.pop();
+      if (state[cur] === 2) continue;
+      state[cur] = 2;
+      if (cur === gi) { found = true; break; }
+      const cc = cur % cols, cr = (cur / cols) | 0;
+      for (const [dc, dr, cost] of DIRS) {
+        const nc = cc + dc, nr = cr + dr;
+        if (nc < 0 || nr < 0 || nc >= cols || nr >= this.rows) continue;
+        const ni = nr * cols + nc;
+        if (this.blocked[ni] || state[ni] === 2) continue;
+        // no cutting corners: a diagonal needs both orthogonal cells free
+        if (dc && dr && (this.blocked[cr * cols + nc] || this.blocked[nr * cols + cc])) continue;
+        const ng = g[cur] + cost;
+        if (state[ni] === 1 && ng >= g[ni]) continue;
+        g[ni] = ng; f[ni] = ng + h(ni); came[ni] = cur; state[ni] = 1;
+        heap.push(ni, f[ni]);
       }
     }
-    return null;
+    if (!found) return null;
+
+    // walk back, then string-pull from the start using real line of sight
+    const cells = [];
+    for (let i = gi; i !== -1; i = came[i]) cells.push(i);
+    cells.reverse();
+    const pts = cells.map((i) => ({ x: this.cellX(i % cols), z: this.cellZ(((i / cols) | 0)) }));
+    pts[0] = { x: sx, z: sz };
+    pts[pts.length - 1] = { x: tx, z: tz };
+    return this._smooth(pts);
   }
 
-  return { blocked, free, lineFree, path, nearestFree };
+  _smooth(pts) {
+    if (pts.length <= 2) return pts;
+    const out = [pts[0]];
+    let anchor = 0;
+    for (let i = 2; i < pts.length; i++) {
+      if (!this.los(pts[anchor].x, pts[anchor].z, pts[i].x, pts[i].z)) {
+        out.push(pts[i - 1]);
+        anchor = i - 1;
+      }
+    }
+    out.push(pts[pts.length - 1]);
+    return out;
+  }
 }

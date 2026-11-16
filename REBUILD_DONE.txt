@@ -1,6 +1,6 @@
-REBUILD DONE — Emberline (threejs-fps-02)
-1. Re-authored every source file this session: main.ts entrypoint plus all 19 game/src modules and game/index.html, hand-written fresh.
-2. Kept the full spec: round-based FPS (first to 8), Ember plant/defuse objective, economy + 5-slot kit + 2 buyable primaries, scoped Longsight (74→32 FOV).
-3. Systems intact: shared A* nav grid with string pulling, guard hearing with wall-muffling raycasts, capsule hitboxes, recoil patterns, FIREPOT grenade, crew-mate AI (Tally/Mason/Brack).
-4. Verified headlessly: `node main.ts` writes a valid deterministic dossier (two runs diff clean); all 9 shot modes (start/play/plant/end/bots/buy/match/nade/radar) rendered and read.
-5. Pass-2 refinement: entrypoint now reports the handed-in tree (file/screenshot counts); no gameplay regressions observed in the screenshots.
+REBUILD DONE — Emberline (make.fun threejs-fps-02), full blind authoring pass.
+1. Authored from spec this session: main.ts entrypoint, game/index.html, and all 19 game/src modules (world, nav, hearing, player, bots, mates, weapon, grenade, bomb, economy, rounds, targets, radar, hud, sound, palette, input, config, main).
+2. The game: round-based tactical FPS, first to 8 — you + Tally/Mason/Brack vs 9 named guards; plant/defuse the Ember at sites A/B; buy menu, three weapons with fixed recoil patterns, FIREPOT kilnwash, A* nav, raycast-muffled hearing, WebAudio-only sound, zero network.
+3. Verified: `node main.ts` writes a valid dossier.json (game facts, module map, handed-in tree with shot sizes); all nine ?shot= modes rendered headless via zsh render_shots.sh and read back as clean, readable frames.
+4. Screenshots: five best modes (play, plant, nade, bots, buy) converted to screenshots/*.jpeg at 1280x800, each under 256KB.
+5. Fixed during verification: Crew context binding, yaw convention (bots faced backwards), WeaponState getter crash, plant-beep rate, buy menu bleeding into live shots, lamp-pole and in-kiln staging placements, scene lighting.

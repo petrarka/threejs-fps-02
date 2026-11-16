@@ -1,351 +1,275 @@
-// The Emberline kiln yard: an original three-lane dusk map. Every surface is
-// painted into canvases in this file — no image files anywhere — and the same
-// box list feeds rendering, collision, ballistics and the nav grid, so cover
-// that blocks the eye also blocks bullets, noise and pathing.
+// world.js — builds the Emberline yard: perimeter clay walls, the big brick
+// kiln and its annexes, wooden crates and low clay walls for cover, eight
+// ember lamps with warm light pools, and the two bomb sites with their
+// chalked letters. Also owns the colliders and every raycast the game needs
+// (bullets, vision, hearing muffling, nav string pulling).
 import * as THREE from 'three';
-import { PALETTE } from './palette.js';
+import { PAL, groundTexture, clayTexture, brickTexture, woodTexture, metalTexture, siteLetterTexture, lampPoolTexture, skyTexture } from './palette.js';
 import { SITES } from './config.js';
 
-// Paint a square canvas, wrap it into a repeating sRGB texture.
-function makeTexture(size, painter, repeatX = 1, repeatY = 1) {
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size;
-  painter(canvas.getContext('2d'), size);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(repeatX, repeatY);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 4;
-  return texture;
-}
-
-// Deterministic speckle (LCG-driven) so baked textures survive reloads intact.
-function speckle(g, size, count, tint) {
-  g.fillStyle = tint;
-  let state = 712367;
-  for (let i = 0; i < count; i += 1) {
-    state = (state * 1664525 + 1013904223) >>> 0;
-    const x = state % size;
-    state = (state * 1664525 + 1013904223) >>> 0;
-    const y = state % size;
-    g.fillRect(x, y, 1 + (state % 4), 1 + (state % 2));
+export class World {
+  constructor(scene) {
+    this.scene = scene;
+    this.colliders = [];   // {x0,y0,z0,x1,y1,z1} axis-aligned boxes
+    this.lamps = [];
+    this.sites = SITES.map((s) => ({ ...s }));
+    this.bounds = { minX: -32, maxX: 32, minZ: -22, maxZ: 22 };
+    this._build();
   }
-}
 
-function bakeSign(title, subtitle, accent = PALETTE.ember) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 256;
-  const g = canvas.getContext('2d');
-  g.fillStyle = 'rgba(16,20,27,.88)';
-  g.fillRect(0, 0, 1024, 256);
-  g.fillStyle = accent;
-  g.fillRect(0, 0, 18, 256);
-  g.fillRect(46, 40, 110, 5);
-  g.fillStyle = PALETTE.paper;
-  g.font = '700 78px system-ui, sans-serif';
-  g.textBaseline = 'middle';
-  g.fillText(title, 46, 116);
-  g.fillStyle = PALETTE.muted;
-  g.font = '500 27px ui-monospace, monospace';
-  g.fillText(subtitle, 49, 190);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
-
-export function createWorld(scene) {
-  const root = new THREE.Group();
-  scene.add(root);
-  const colliders = [];
-  const solids = [];
-  const radarWalls = [];
-
-  // --- baked materials -----------------------------------------------------
-  const brickMap = makeTexture(256, (g, s) => {
-    g.fillStyle = '#b7aaa0';
-    g.fillRect(0, 0, s, s);
-    for (let row = 0; row < 12; row += 1) {
-      const y = row * 22;
-      g.fillStyle = '#69666a';
-      g.fillRect(0, y, s, 3);
-      const shift = row % 2 ? 26 : 0;
-      for (let x = shift; x < s; x += 52) g.fillRect(x, y, 3, 22);
-      g.fillStyle = 'rgba(255,235,214,.10)';
-      g.fillRect(0, y + 3, s, 2);
-    }
-    speckle(g, s, 260, 'rgba(35,27,29,.18)');
-  }, 2.4, 1.6);
-
-  const panelMap = makeTexture(256, (g, s) => {
-    g.fillStyle = '#c2c0bd';
-    g.fillRect(0, 0, s, s);
-    g.strokeStyle = '#77777d';
-    g.lineWidth = 3;
-    g.strokeRect(4, 4, s - 8, s - 8);
-    g.beginPath();
-    g.moveTo(s / 2, 0); g.lineTo(s / 2, s);
-    g.moveTo(0, s / 2); g.lineTo(s, s / 2);
-    g.stroke();
-    speckle(g, s, 350, 'rgba(38,39,45,.15)');
-    for (const x of [15, s - 15]) {
-      for (const y of [15, s - 15]) {
-        g.fillStyle = '#55565c';
-        g.beginPath();
-        g.arc(x, y, 3, 0, Math.PI * 2);
-        g.fill();
-      }
-    }
-  }, 2, 2);
-
-  const yardMap = makeTexture(512, (g, s) => {
-    g.fillStyle = '#aaa7a5';
-    g.fillRect(0, 0, s, s);
-    g.strokeStyle = '#67666b';
-    g.lineWidth = 3;
-    for (let i = 0; i <= 8; i += 1) {
-      g.beginPath();
-      g.moveTo(i * 64, 0); g.lineTo(i * 64, s);
-      g.moveTo(0, i * 64); g.lineTo(s, i * 64);
-      g.stroke();
-    }
-    speckle(g, s, 950, 'rgba(30,28,31,.20)');
-    g.strokeStyle = 'rgba(45,40,42,.32)';
-    g.lineWidth = 2;
-    for (let i = 0; i < 16; i += 1) {
-      const x = (i * 83) % s;
-      const y = (i * 137) % s;
-      g.beginPath();
-      g.moveTo(x, y);
-      g.lineTo(x + 24, y + 8);
-      g.lineTo(x + 36, y + 3);
-      g.stroke();
-    }
-  }, 6, 4);
-
-  const crateMap = makeTexture(128, (g, s) => {
-    g.fillStyle = '#d0c0a8';
-    g.fillRect(0, 0, s, s);
-    g.fillStyle = '#736554';
-    for (let i = 0; i < 4; i += 1) g.fillRect(0, i * 32, s, 3);
-    g.fillRect(10, 0, 7, s);
-    g.fillRect(s - 17, 0, 7, s);
-    g.strokeStyle = '#5a5046';
-    g.lineWidth = 5;
-    g.beginPath();
-    g.moveTo(18, 15); g.lineTo(s - 18, s - 15);
-    g.moveTo(s - 18, 15); g.lineTo(18, s - 15);
-    g.stroke();
-    speckle(g, s, 90, 'rgba(45,32,26,.18)');
-  });
-
-  const materials = {
-    ground: new THREE.MeshStandardMaterial({ color: PALETTE.ground, map: yardMap, roughness: 0.98 }),
-    brick: new THREE.MeshStandardMaterial({ color: PALETTE.brick, map: brickMap, roughness: 0.94 }),
-    clay: new THREE.MeshStandardMaterial({ color: PALETTE.clay, map: brickMap, roughness: 0.88 }),
-    concrete: new THREE.MeshStandardMaterial({ color: PALETTE.concrete, map: panelMap, roughness: 0.93 }),
-    steel: new THREE.MeshStandardMaterial({ color: PALETTE.steel, map: panelMap, roughness: 0.63, metalness: 0.3 }),
-    crate: new THREE.MeshStandardMaterial({ color: PALETTE.sand, map: crateMap, roughness: 0.84 }),
-    dark: new THREE.MeshStandardMaterial({ color: PALETTE.coal, roughness: 0.7, metalness: 0.25 }),
-    ember: new THREE.MeshStandardMaterial({ color: PALETTE.ember, emissive: PALETTE.ember, emissiveIntensity: 2.2, roughness: 0.4 }),
-  };
-
-  // One box factory: mesh + ballistic solid + collision AABB, always in sync.
-  function block(w, h, d, x, y, z, material = 'concrete', opts = {}) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), materials[material]);
-    mesh.position.set(x, y, z);
-    mesh.castShadow = opts.castShadow !== false;
-    mesh.receiveShadow = true;
-    if (opts.heavy) mesh.userData.heavy = true; // heavy masonry muffles sound hardest
-    root.add(mesh);
-    if (opts.solid !== false) solids.push(mesh);
-    if (opts.collider !== false) {
-      colliders.push(new THREE.Box3(
-        new THREE.Vector3(x - w / 2, y - h / 2, z - d / 2),
-        new THREE.Vector3(x + w / 2, y + h / 2, z + d / 2),
-      ));
-    }
+  _box(x0, z0, x1, z1, h, mat, y0 = 0) {
+    const w = x1 - x0, d = z1 - z0;
+    const geo = new THREE.BoxGeometry(w, h, d);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set((x0 + x1) / 2, y0 + h / 2, (z0 + z1) / 2);
+    this.scene.add(mesh);
+    this.colliders.push({ x0, y0, z0, x1, y1: y0 + h, z1 });
     return mesh;
   }
 
-  function wall(x1, z1, x2, z2, material = 'concrete', height = 4.3, thick = 0.45) {
-    const runsX = Math.abs(x2 - x1) >= Math.abs(z2 - z1);
-    const w = runsX ? Math.abs(x2 - x1) + thick : thick;
-    const d = runsX ? thick : Math.abs(z2 - z1) + thick;
-    block(w, height, d, (x1 + x2) / 2, height / 2, (z1 + z2) / 2, material, { heavy: true });
-    radarWalls.push([x1, z1, x2, z2]);
-  }
+  _build() {
+    const s = this.scene;
+    s.fog = new THREE.Fog(PAL.fog, 34, 130);
+    s.background = new THREE.Color(PAL.night);
 
-  // --- the yard itself -----------------------------------------------------
-  block(48, 0.3, 32, 0, -0.15, 0, 'ground', { collider: false, castShadow: false });
-  // Lane paint is real geometry, not a downloaded decal.
-  const paint = new THREE.MeshBasicMaterial({ color: '#b76b3f', transparent: true, opacity: 0.52, depthWrite: false });
-  for (const x of [-3.55, 3.55]) {
-    const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.07, 10), paint);
-    stripe.rotation.x = -Math.PI / 2;
-    stripe.position.set(x, 0.013, 9);
-    root.add(stripe);
-  }
-
-  // Perimeter.
-  wall(-24, -16, 24, -16, 'brick');
-  wall(-24, 16, 24, 16, 'brick');
-  wall(-24, -16, -24, 16, 'concrete');
-  wall(24, -16, 24, 16, 'concrete');
-
-  // Mid: fast and exposed, with a broken gate giving three firing angles.
-  wall(-4, 4, -4, 16);
-  wall(4, 4, 4, 16);
-  wall(-4, 4, -1.45, 4);
-  wall(1.45, 4, 4, 4);
-  block(1.55, 1.05, 1.55, -0.85, 0.525, 0.4, 'crate');
-  block(1.55, 1.05, 1.55, 0.85, 0.525, -0.1, 'crate');
-  block(0.65, 2.5, 0.65, -3.15, 1.25, -3.3, 'steel');
-  block(0.65, 2.5, 0.65, 3.15, 1.25, -3.3, 'steel');
-  block(8.2, 0.5, 2.2, 0, 0.25, -12.2, 'concrete');
-
-  // West long wraps a hot kiln stack and reaches A through two doors.
-  wall(-10.5, 2, -10.5, 12, 'brick');
-  wall(-18.2, 2, -12.7, 2, 'brick');
-  wall(-10.5, 2, -5.2, 2, 'brick');
-  block(1.45, 1.1, 1.45, -7.3, 0.55, 7.8, 'crate');
-  block(1.45, 1.1, 1.45, -7.3, 0.55, 3.4, 'crate');
-  block(1.2, 3.4, 1.2, -14.1, 1.7, 8.2, 'clay', { heavy: true });
-
-  // East short is tighter, with one connector into B.
-  wall(10.5, 6, 10.5, 12);
-  wall(6.2, 6, 14, 6);
-  wall(14, -14, 14, -2);
-  wall(14, 2, 14, 6);
-  block(1.45, 1.1, 1.45, 8.5, 0.55, 10.1, 'crate');
-  block(1.45, 1.1, 1.45, 12.1, 0.55, 10.1, 'crate');
-  block(0.65, 3.2, 0.65, 7, 1.6, -2.8, 'clay');
-  block(0.65, 3.2, 0.65, -7, 1.6, -2.8, 'clay');
-
-  // Site pads: cover for plant/defuse angles, painted letters stay readable.
-  for (const site of SITES) {
-    const pad = new THREE.Mesh(
-      new THREE.PlaneGeometry(7.1, 7.1),
-      new THREE.MeshStandardMaterial({ color: '#693c2e', roughness: 0.9, emissive: '#6b2b16', emissiveIntensity: 0.32 }),
+    // sky dome
+    const sky = new THREE.Mesh(
+      new THREE.SphereGeometry(240, 24, 12),
+      new THREE.MeshBasicMaterial({ map: skyTexture(), side: THREE.BackSide, fog: false, depthWrite: false })
     );
-    pad.rotation.x = -Math.PI / 2;
-    pad.position.set(site.x, 0.018, site.z);
-    pad.receiveShadow = true;
-    root.add(pad);
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(2.55, 2.66, 48),
-      new THREE.MeshBasicMaterial({ color: PALETTE.ember, transparent: true, opacity: 0.78, side: THREE.DoubleSide }),
+    sky.renderOrder = -10;
+    s.add(sky);
+
+    // lights: cool moon fill + warm lamps
+    s.add(new THREE.HemisphereLight(0x44547a, 0x241c14, 1.3));
+    const moon = new THREE.DirectionalLight(0x8fa8d8, 0.75);
+    moon.position.set(-30, 60, 20);
+    s.add(moon);
+
+    // ground
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(68, 48),
+      new THREE.MeshLambertMaterial({ map: groundTexture() })
     );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.set(site.x, 0.035, site.z);
-    root.add(ring);
-    const glyph = document.createElement('canvas');
-    glyph.width = glyph.height = 256;
-    const lg = glyph.getContext('2d');
-    lg.fillStyle = PALETTE.paper;
-    lg.font = '900 190px system-ui, sans-serif';
-    lg.textAlign = 'center';
-    lg.textBaseline = 'middle';
-    lg.fillText(site.id, 128, 140);
-    const glyphTexture = new THREE.CanvasTexture(glyph);
-    glyphTexture.colorSpace = THREE.SRGBColorSpace;
-    const letter = new THREE.Mesh(new THREE.PlaneGeometry(3.1, 3.1), new THREE.MeshBasicMaterial({
-      map: glyphTexture, transparent: true, opacity: 0.92, depthWrite: false,
-    }));
-    letter.rotation.x = -Math.PI / 2;
-    letter.position.set(site.x, 0.045, site.z);
-    root.add(letter);
-  }
-  block(2.7, 0.95, 1.2, -13.4, 0.475, -4.6, 'crate');
-  block(1.4, 1.4, 1.4, -18.6, 0.7, -6.2, 'crate');
-  block(1.4, 1.4, 1.4, -17.1, 0.7, -6.2, 'crate');
-  block(2.7, 0.95, 1.2, 13.1, 0.475, -4.6, 'crate');
-  block(1.4, 1.4, 1.4, 18.2, 0.7, -6.2, 'crate');
+    ground.rotation.x = -Math.PI / 2;
+    s.add(ground);
 
-  // Kilns read as cylinders; their colliders stay conservative boxes.
-  for (const [x, z] of [[-20, -11.7], [20, -11.7]]) {
-    const kiln = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.55, 3.4, 16), materials.clay);
-    kiln.position.set(x, 1.7, z);
-    kiln.castShadow = kiln.receiveShadow = true;
-    kiln.userData.heavy = true;
-    root.add(kiln);
-    solids.push(kiln);
-    colliders.push(new THREE.Box3(new THREE.Vector3(x - 1.35, 0, z - 1.35), new THREE.Vector3(x + 1.35, 3.4, z + 1.35)));
-    const chimney = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.62, 3.2, 12), materials.dark);
-    chimney.position.set(x, 4.5, z);
-    chimney.castShadow = true;
-    root.add(chimney);
-    const mouth = new THREE.Mesh(new THREE.CircleGeometry(0.43, 16), materials.ember);
-    mouth.position.set(x, 1.25, z + 1.37);
-    root.add(mouth);
-  }
+    const clay = new THREE.MeshLambertMaterial({ map: clayTexture() });
+    const brick = new THREE.MeshLambertMaterial({ map: brickTexture() });
+    const wood = new THREE.MeshLambertMaterial({ map: woodTexture() });
+    const metal = new THREE.MeshLambertMaterial({ map: metalTexture() });
 
-  // Wayfinding is lit geometry in the world, not UI text.
-  const sign = new THREE.Mesh(new THREE.PlaneGeometry(6.6, 1.65), new THREE.MeshBasicMaterial({
-    map: bakeSign('EMBERLINE', 'KILNWORKS  /  NIGHT SHIFT  /  YARD 02'), transparent: true,
-  }));
-  sign.position.set(0, 3.45, 3.74);
-  root.add(sign);
-  for (const site of SITES) {
-    const siteSign = new THREE.Mesh(new THREE.PlaneGeometry(3.3, 0.825), new THREE.MeshBasicMaterial({
-      map: bakeSign(`SITE ${site.id}`, site.name), transparent: true,
-    }));
-    siteSign.position.set(site.x, 2.65, -15.74);
-    root.add(siteSign);
-  }
+    // perimeter walls (h=4)
+    this._box(-33, -23, 33, -22, 4, clay);
+    this._box(-33, 22, 33, 23, 4, clay);
+    this._box(-33, -23, -32, 23, 4, clay);
+    this._box(32, -23, 33, 23, 4, clay);
 
-  // Ember lamp pools: posts, glowing heads, flickering point lights.
-  const lamps = [];
-  for (const [x, z] of [[-4.65, 11.8], [4.65, 11.8], [-5.1, -8.2], [5.1, -8.2], [-16, -3.2], [16, -3.2]]) {
-    block(0.12, 3.5, 0.12, x, 1.75, z, 'dark', { collider: false });
-    block(0.48, 0.13, 0.48, x, 3.48, z, 'ember', { collider: false, solid: false, castShadow: false });
-    const light = new THREE.PointLight(PALETTE.ember, 14, 12, 1.65);
-    light.position.set(x, 3.25, z);
-    scene.add(light);
-    lamps.push(light);
-  }
+    // the kiln: central block, chimney, two annexes
+    this._box(-5, -6, 5, 0, 5, brick);
+    this._box(-1.2, -3.2, 1.2, -0.8, 8.5, brick);
+    this._box(-11, -5, -7, -1, 3.2, brick);
+    this._box(7, -5, 11, -1, 3.2, brick);
 
-  // Procedural dusk dome with deterministic ember-stars.
-  const skyMap = makeTexture(1024, (g, s) => {
-    const gradient = g.createLinearGradient(0, 0, 0, s);
-    gradient.addColorStop(0, '#101724');
-    gradient.addColorStop(0.45, '#303245');
-    gradient.addColorStop(0.72, '#805347');
-    gradient.addColorStop(1, '#252936');
-    g.fillStyle = gradient;
-    g.fillRect(0, 0, s, s);
-    g.fillStyle = 'rgba(245,234,216,.45)';
-    for (let i = 0; i < 90; i += 1) {
-      g.fillRect((i * 193) % s, (i * 79) % (s * 0.45), i % 7 === 0 ? 2 : 1, 1);
+    // charcoal bins by the kiln mouth
+    this._box(-4.6, -9.2, -3.2, -7.8, 1.0, metal);
+    this._box(3.2, -9.2, 4.6, -7.8, 1.0, metal);
+
+    // south shed — mid-map anchor between spawn and the kiln
+    this._box(-3, 12, 3, 14, 2.6, brick);
+
+    // crates (1.4m cubes of firing wood)
+    const crates = [
+      [-16, 2], [-18.5, -6], [-12, -10.5], [16, 0.5], [18.5, -8], [12, -10.5],
+      [-6, 9], [6, 9], [-20.5, -10], [-26, -16.5], [20.5, -10], [26, -16.5],
+      [-9, 15.5], [9, 15.5],
+    ];
+    for (const [x, z] of crates) this._box(x - 0.7, z - 0.7, x + 0.7, z + 0.7, 1.4, wood);
+
+    // low clay walls (1.1m — duck behind, shoot over)
+    const lows = [
+      [-15, 3.3, -11, 3.7], [11, 3.3, 15, 3.7],
+      [-2, -11.2, 2, -10.8],
+      [-20, -13.2, -16, -12.8], [16, -13.2, 20, -12.8],
+      [-26, -5.2, -22, -4.8], [22, -5.2, 26, -4.8],
+    ];
+    for (const [x0, z0, x1, z1] of lows) this._box(x0, z0, x1, z1, 1.1, clay);
+
+    // bomb site letters chalked on the ground
+    for (const site of this.sites) {
+      const color = site.id === 'A' ? '#ffb347' : '#6ec6ff';
+      const decal = new THREE.Mesh(
+        new THREE.PlaneGeometry(site.half * 2, site.half * 2),
+        new THREE.MeshBasicMaterial({ map: siteLetterTexture(site.id, color), transparent: true, depthWrite: false })
+      );
+      decal.rotation.x = -Math.PI / 2;
+      decal.position.set(site.cx, 0.02, site.cz);
+      s.add(decal);
     }
-  });
-  const sky = new THREE.Mesh(new THREE.SphereGeometry(95, 24, 16), new THREE.MeshBasicMaterial({
-    map: skyMap, side: THREE.BackSide, fog: false,
-  }));
-  sky.position.y = -12;
-  scene.add(sky);
 
-  scene.background = new THREE.Color(PALETTE.dusk);
-  scene.fog = new THREE.FogExp2(PALETTE.dusk, 0.018);
-  scene.add(new THREE.HemisphereLight('#9ca9c5', '#2d2020', 1.9));
-  const sun = new THREE.DirectionalLight('#ffd0a1', 3.1);
-  sun.position.set(-12, 20, 9);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  Object.assign(sun.shadow.camera, { left: -28, right: 28, top: 24, bottom: -24, near: 1, far: 60 });
-  sun.shadow.bias = -0.00035;
-  sun.shadow.normalBias = 0.035;
-  scene.add(sun);
-  const rim = new THREE.DirectionalLight('#708bb0', 1.15);
-  rim.position.set(10, 10, -15);
-  scene.add(rim);
+    // ember lamps: pole, glowing bowl, point light, warm pool on the ash
+    const poolTex = lampPoolTexture();
+    const lampSpots = [[-24, -12], [0, -13], [24, -12], [-8, 6], [8, 6], [-16, 14], [16, 14], [0, 8]];
+    const poleGeo = new THREE.CylinderGeometry(0.07, 0.1, 2.3, 6);
+    const bowlGeo = new THREE.IcosahedronGeometry(0.24, 1);
+    const poleMat = new THREE.MeshLambertMaterial({ color: 0x2c313c });
+    const poolGeo = new THREE.PlaneGeometry(9, 9);
+    lampSpots.forEach(([x, z], i) => {
+      const pole = new THREE.Mesh(poleGeo, poleMat);
+      pole.position.set(x, 1.15, z);
+      s.add(pole);
+      const flame = new THREE.Mesh(bowlGeo, new THREE.MeshBasicMaterial({ color: PAL.ember }));
+      flame.position.set(x, 2.45, z);
+      s.add(flame);
+      const light = new THREE.PointLight(0xffa050, 19, 21, 1.8);
+      light.position.set(x, 2.6, z);
+      s.add(light);
+      const pool = new THREE.Mesh(poolGeo, new THREE.MeshBasicMaterial({
+        map: poolTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      }));
+      pool.rotation.x = -Math.PI / 2;
+      pool.position.set(x, 0.03, z);
+      s.add(pool);
+      this.colliders.push({ x0: x - 0.12, y0: 0, z0: z - 0.12, x1: x + 0.12, y1: 2.3, z1: z + 0.12 });
+      this.lamps.push({ x, z, light, flame, phase: i * 1.7, base: 19 });
+    });
+  }
 
-  return {
-    root, colliders, solids, radarWalls, sites: SITES,
-    update(time) {
-      for (let i = 0; i < lamps.length; i += 1) {
-        lamps[i].intensity = 13.5 + Math.sin(time * 3.1 + i * 2.7) * 0.6;
+  // deterministic lamp breathing — driven by sim time, so frozen frames stay put
+  update(t) {
+    for (const l of this.lamps) {
+      const f = 0.88 + 0.09 * Math.sin(t * 6.1 + l.phase) + 0.05 * Math.sin(t * 13.7 + l.phase * 2.3);
+      l.light.intensity = l.base * f;
+      l.flame.scale.setScalar(0.9 + 0.18 * f);
+    }
+  }
+
+  onSite(x, z) {
+    for (const s of this.sites) {
+      if (Math.abs(x - s.cx) <= s.half && Math.abs(z - s.cz) <= s.half) return s;
+    }
+    return null;
+  }
+
+  // --- movement queries -------------------------------------------------
+  // circle at (x,z,r) vs every collider tall enough to matter
+  collides(x, z, r) {
+    for (const c of this.colliders) {
+      if (c.y1 < 0.35) continue;
+      const cx = Math.max(c.x0, Math.min(x, c.x1));
+      const cz = Math.max(c.z0, Math.min(z, c.z1));
+      const dx = x - cx, dz = z - cz;
+      if (dx * dx + dz * dz < r * r) return true;
+    }
+    return false;
+  }
+
+  // axis-separated move: slide along walls, never tunnel
+  move(x, z, dx, dz, r) {
+    let nx = x + dx;
+    if (this.collides(nx, z, r)) nx = x;
+    let nz = z + dz;
+    if (this.collides(nx, nz, r)) nz = z;
+    return { x: nx, z: nz };
+  }
+
+  // point used by the nav grid: blocked if a body-radius circle can't stand here
+  blockedForNav(x, z) { return this.collides(x, z, 0.5); }
+
+  // chest-height 2D line of sight for nav string pulling
+  los(x0, z0, x1, z1) {
+    return !this._segmentHit(x0, 1.1, z0, x1, 1.1, z1, 0.55);
+  }
+
+  // --- raycasts -----------------------------------------------------------
+  // nearest collider hit along ray, or null. Slab method per AABB.
+  raycast(ox, oy, oz, dx, dy, dz, maxT) {
+    let bestT = maxT;
+    let hit = null;
+    for (const c of this.colliders) {
+      let t0 = 0, t1 = bestT;
+      let axis = -1, sign = 0;
+      let ok = true;
+      const o = [ox, oy, oz], d = [dx, dy, dz];
+      const lo = [c.x0, c.y0, c.z0], hi = [c.x1, c.y1, c.z1];
+      for (let a = 0; a < 3; a++) {
+        if (Math.abs(d[a]) < 1e-9) {
+          if (o[a] < lo[a] || o[a] > hi[a]) { ok = false; break; }
+        } else {
+          let ta = (lo[a] - o[a]) / d[a];
+          let tb = (hi[a] - o[a]) / d[a];
+          let s = -1;
+          if (ta > tb) { const tmp = ta; ta = tb; tb = tmp; s = 1; }
+          if (ta > t0) { t0 = ta; axis = a; sign = s; }
+          if (tb < t1) t1 = tb;
+          if (t0 > t1) { ok = false; break; }
+        }
       }
-    },
-  };
+      if (ok && t0 < bestT && t0 > 0.0001) {
+        bestT = t0;
+        hit = { t: t0, axis, sign };
+      }
+    }
+    if (!hit) return null;
+    const n = [0, 0, 0];
+    if (hit.axis >= 0) n[hit.axis] = hit.sign;
+    return {
+      t: hit.t,
+      nx: n[0], ny: n[1], nz: n[2],
+      x: ox + dx * hit.t, y: oy + dy * hit.t, z: oz + dz * hit.t,
+    };
+  }
+
+  // does the segment cross any collider taller than minH? (used at 1.1m chest)
+  _segmentHit(x0, y0, z0, x1, y1, z1, minH) {
+    const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+    for (const c of this.colliders) {
+      if (c.y1 < minH) continue;
+      let t0 = 0, t1 = 1;
+      let ok = true;
+      const o = [x0, y0, z0], d = [dx, dy, dz];
+      const lo = [c.x0, c.y0, c.z0], hi = [c.x1, c.y1, c.z1];
+      for (let a = 0; a < 3; a++) {
+        if (Math.abs(d[a]) < 1e-9) {
+          if (o[a] < lo[a] || o[a] > hi[a]) { ok = false; break; }
+        } else {
+          let ta = (lo[a] - o[a]) / d[a];
+          let tb = (hi[a] - o[a]) / d[a];
+          if (ta > tb) { const tmp = ta; ta = tb; tb = tmp; }
+          if (ta > t0) t0 = ta;
+          if (tb < t1) t1 = tb;
+          if (t0 > t1) { ok = false; break; }
+        }
+      }
+      if (ok && t1 > 0.001 && t0 < 0.999) return true;
+    }
+    return false;
+  }
+
+  // count of walls between two points — the hearing muffling input
+  wallCrossings(x0, y0, z0, x1, y1, z1) {
+    const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+    let count = 0;
+    for (const c of this.colliders) {
+      if (c.y1 < 1.2) continue; // low cover doesn't muffle sound
+      let t0 = 0, t1 = 1;
+      let ok = true;
+      const o = [x0, y0, z0], d = [dx, dy, dz];
+      const lo = [c.x0, c.y0, c.z0], hi = [c.x1, c.y1, c.z1];
+      for (let a = 0; a < 3; a++) {
+        if (Math.abs(d[a]) < 1e-9) {
+          if (o[a] < lo[a] || o[a] > hi[a]) { ok = false; break; }
+        } else {
+          let ta = (lo[a] - o[a]) / d[a];
+          let tb = (hi[a] - o[a]) / d[a];
+          if (ta > tb) { const tmp = ta; ta = tb; tb = tmp; }
+          if (t0 > tb || t1 < ta) { ok = false; break; }
+          if (ta > t0) t0 = ta;
+          if (tb < t1) t1 = tb;
+        }
+      }
+      if (ok && t1 > 0.001 && t0 < 0.999) count++;
+    }
+    return count;
+  }
 }

@@ -1,115 +1,148 @@
-// North-up tactical radar: the wall plan is baked once from the live map, and
-// contacts come from the simulation each frame — cyan for crew, ember for
-// guards who have revealed themselves by engaging, hunting or defusing.
-import { PALETTE } from './palette.js';
-import { SITES } from './config.js';
+// radar.js — the yard scan, top-left. A plan view of Emberline drawn from
+// the real collider list, the two sites lettered, your heading wedge, your
+// crew as green pips, and guards as red blips only while they're actually
+// known: seen by you or a mate this moment, or heard through the walls a
+// breath ago. The planted Ember flashes like it means it.
+import { clamp } from './config.js';
 
-const SIZE = 184;
-const PAD = 15;
-const SCALE = (SIZE - PAD * 2) / 48;
+export class Radar {
+  constructor(G, canvas) {
+    this.G = G;
+    this.c = canvas;
+    this.g = canvas.getContext('2d');
+    this.w = canvas.width;
+    this.h = canvas.height;
+    this._knownT = 0;
+    this._known = new Map(); // guard -> last known {x,z,t}
+  }
 
-export function createRadar(canvas, world) {
-  canvas.width = SIZE;
-  canvas.height = SIZE;
-  const context = canvas.getContext('2d');
-  const px = (value) => PAD + (value + 24) * SCALE;
-  const py = (value) => PAD + (value + 16) * SCALE;
+  _pt(x, z) {
+    const b = this.G.world.bounds;
+    const sx = (this.w - 12) / (b.maxX - b.minX);
+    const sz = (this.h - 12) / (b.maxZ - b.minZ);
+    const s = Math.min(sx, sz);
+    return [6 + (x - b.minX) * s, 6 + (z - b.minZ) * s];
+  }
 
-  // Static underlay: grid, sites, wall plan, north tick — painted once.
-  const base = document.createElement('canvas');
-  base.width = base.height = SIZE;
-  const g = base.getContext('2d');
-  g.fillStyle = 'rgba(13,17,23,.93)';
-  g.fillRect(0, 0, SIZE, SIZE);
-  g.strokeStyle = 'rgba(127,208,200,.08)';
-  g.lineWidth = 1;
-  for (let i = -20; i <= 20; i += 5) {
-    g.beginPath(); g.moveTo(px(i), py(-16)); g.lineTo(px(i), py(16)); g.stroke();
-  }
-  for (let i = -15; i <= 15; i += 5) {
-    g.beginPath(); g.moveTo(px(-24), py(i)); g.lineTo(px(24), py(i)); g.stroke();
-  }
-  for (const site of SITES) {
-    g.fillStyle = 'rgba(255,138,61,.09)';
-    g.fillRect(px(site.x - 3.4), py(site.z - 3.4), 6.8 * SCALE, 6.8 * SCALE);
-    g.strokeStyle = 'rgba(255,138,61,.55)';
-    g.strokeRect(px(site.x - 3.4), py(site.z - 3.4), 6.8 * SCALE, 6.8 * SCALE);
-    g.fillStyle = PALETTE.ember;
-    g.font = '700 12px ui-monospace, monospace';
-    g.textAlign = 'center';
-    g.fillText(site.id, px(site.x), py(site.z) + 4);
-  }
-  g.strokeStyle = '#626570';
-  g.lineWidth = 2.4;
-  g.lineCap = 'square';
-  for (const wall of world.radarWalls) {
-    g.beginPath();
-    g.moveTo(px(wall[0]), py(wall[1]));
-    g.lineTo(px(wall[2]), py(wall[3]));
-    g.stroke();
-  }
-  g.fillStyle = PALETTE.muted;
-  g.font = '600 9px ui-monospace, monospace';
-  g.textAlign = 'left';
-  g.fillText('N', 5, 11);
-
-  function mark(x, y, tint, radius = 2.6, square = false) {
-    context.fillStyle = tint;
-    context.shadowColor = tint;
-    context.shadowBlur = 5;
-    if (square) context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-    else {
-      context.beginPath();
-      context.arc(x, y, radius, 0, Math.PI * 2);
-      context.fill();
+  update(dt) {
+    const G = this.G;
+    // refresh guard knowledge at 8 Hz — seen by any crew eye
+    this._knownT -= dt;
+    if (this._knownT <= 0) {
+      this._knownT = 0.12;
+      const eyes = [G.player, ...G.mates].filter((e) => e.alive);
+      for (const guard of G.guards) {
+        if (!guard.alive) continue;
+        let seen = false;
+        for (const e of eyes) {
+          if (G.targets.canSee(e.pos.x, e.pos.y + e.eyeY, e.pos.z, guard.pos.x, guard.pos.y + 1.2, guard.pos.z)) {
+            const d = Math.hypot(e.pos.x - guard.pos.x, e.pos.z - guard.pos.z);
+            if (d < 34) { seen = true; break; }
+          }
+        }
+        if (seen) this._known.set(guard, { x: guard.pos.x, z: guard.pos.z, t: G.time });
+      }
     }
-    context.shadowBlur = 0;
-  }
 
-  function draw(player, yaw, guards, mates, bomb) {
-    context.clearRect(0, 0, SIZE, SIZE);
-    context.drawImage(base, 0, 0);
-    const cx = px(player.x);
-    const cy = py(player.z);
-    const angle = -yaw - Math.PI / 2;
+    const g = this.g;
+    g.clearRect(0, 0, this.w, this.h);
+    g.fillStyle = 'rgba(8,12,20,0.85)';
+    g.fillRect(0, 0, this.w, this.h);
 
-    // View cone ahead of the player wedge.
-    context.fillStyle = 'rgba(245,234,216,.08)';
-    context.beginPath();
-    context.moveTo(cx, cy);
-    context.arc(cx, cy, 31, angle - 0.48, angle + 0.48);
-    context.closePath();
-    context.fill();
-
-    for (const guard of guards) {
-      if (!guard.alive) continue;
-      // Quiet patrols stay off the scope until they act on something.
-      if (!['engage', 'defuse', 'investigate'].includes(guard.mode)) continue;
-      const p = guard.group.position;
-      mark(px(p.x), py(p.z), PALETTE.ember, 2.5, true);
+    // walls from the live collider list
+    g.strokeStyle = 'rgba(255,179,71,0.5)';
+    g.fillStyle = 'rgba(255,179,71,0.12)';
+    g.lineWidth = 1;
+    for (const c of G.world.colliders) {
+      if (c.y1 < 1.0) continue;
+      const [x0, z0] = this._pt(c.x0, c.z0);
+      const [x1, z1] = this._pt(c.x1, c.z1);
+      g.fillRect(x0, z0, x1 - x0, z1 - z0);
+      g.strokeRect(x0, z0, x1 - x0, z1 - z0);
     }
-    for (const mate of mates) {
-      if (!mate.alive) continue;
-      const p = mate.group.position;
-      mark(px(p.x), py(p.z), PALETTE.friendly, 2.4);
+
+    // sites
+    for (const s of G.world.sites) {
+      const [x, z] = this._pt(s.cx, s.cz);
+      g.strokeStyle = s.id === 'A' ? 'rgba(255,179,71,0.8)' : 'rgba(110,198,255,0.8)';
+      g.setLineDash([3, 2]);
+      const [hx, hz] = this._pt(s.cx + s.half, s.cz + s.half);
+      g.strokeRect(x - (hx - x), z - (hz - z), (hx - x) * 2, (hz - z) * 2);
+      g.setLineDash([]);
+      g.fillStyle = s.id === 'A' ? '#ffb347' : '#6ec6ff';
+      g.font = 'bold 11px Menlo, monospace';
+      g.textAlign = 'center';
+      g.fillText(s.id, x, z + 4);
     }
-    if (bomb) mark(px(bomb.x), py(bomb.z), bomb.blink ? PALETTE.paper : PALETTE.ember, 3.5, true);
 
-    context.save();
-    context.translate(cx, cy);
-    context.rotate(angle + Math.PI / 2);
-    context.fillStyle = PALETTE.paper;
-    context.shadowColor = PALETTE.paper;
-    context.shadowBlur = 6;
-    context.beginPath();
-    context.moveTo(0, -6);
-    context.lineTo(4.5, 5);
-    context.lineTo(0, 3);
-    context.lineTo(-4.5, 5);
-    context.closePath();
-    context.fill();
-    context.restore();
+    // heard shots ring faintly where they happened
+    for (const n of G.hearing.noises) {
+      const age = G.hearing.now - n.t;
+      if (age > 2.5 || (n.kind !== 'shot' && n.kind !== 'boom')) continue;
+      const [x, z] = this._pt(n.x, n.z);
+      g.strokeStyle = `rgba(255,107,94,${0.5 * (1 - age / 2.5)})`;
+      g.beginPath();
+      g.arc(x, z, 2 + age * 5, 0, Math.PI * 2);
+      g.stroke();
+    }
+
+    // known guards: red blips, fading over two seconds
+    for (const [guard, k] of this._known) {
+      const age = G.time - k.t;
+      if (age > 2 || !guard.alive) { this._known.delete(guard); continue; }
+      const [x, z] = this._pt(k.x, k.z);
+      g.fillStyle = `rgba(255,107,94,${1 - age / 2})`;
+      g.beginPath();
+      g.arc(x, z, 2.6, 0, Math.PI * 2);
+      g.fill();
+    }
+
+    // the Ember: carried (small square on its carrier), dropped, or planted
+    const bomb = G.bomb;
+    if (bomb.state !== 'idle') {
+      const [x, z] = this._pt(bomb.x, bomb.z);
+      if (bomb.state === 'planted') {
+        const blink = Math.sin(G.time * 9) > 0;
+        g.fillStyle = blink ? '#ffd080' : '#ff7a2f';
+        g.beginPath();
+        g.arc(x, z, 4, 0, Math.PI * 2);
+        g.fill();
+        g.strokeStyle = 'rgba(255,122,47,0.7)';
+        g.beginPath();
+        g.arc(x, z, 7, 0, Math.PI * 2);
+        g.stroke();
+      } else {
+        g.fillStyle = '#ffb347';
+        g.fillRect(x - 2.5, z - 2.5, 5, 5);
+      }
+    }
+
+    // mates: green pips
+    for (const m of G.mates) {
+      if (!m.alive) continue;
+      const [x, z] = this._pt(m.pos.x, m.pos.z);
+      g.fillStyle = '#7dd87d';
+      g.beginPath();
+      g.arc(x, z, 2.4, 0, Math.PI * 2);
+      g.fill();
+    }
+
+    // you: amber wedge with a heading tick
+    if (G.player.alive) {
+      const p = G.player;
+      const [x, z] = this._pt(p.pos.x, p.pos.z);
+      const fx = -Math.sin(p.yaw), fz = -Math.cos(p.yaw); // facing on the plan
+      g.save();
+      g.translate(x, z);
+      g.rotate(Math.atan2(fx, -fz));
+      g.fillStyle = '#ffb347';
+      g.beginPath();
+      g.moveTo(0, -5);
+      g.lineTo(3.4, 4);
+      g.lineTo(-3.4, 4);
+      g.closePath();
+      g.fill();
+      g.restore();
+    }
   }
-
-  return { draw };
 }

@@ -1,140 +1,144 @@
-// A small WebAudio instrument rack. No files, fetches or decoded assets:
-// every report, impact, fuse tick and interface cue is synthesized on the fly
-// after the first user gesture unlocks the context.
-let ctx = null;
-let bus = null;
-let noiseBuf = null;
-let noiseCursor = 0;
-let muted = false;
-const MASTER = 0.32;
+// sound.js — every sound in Emberline is synthesized in WebAudio at runtime:
+// gunshots (noise burst + body thump), hits, plant beeps, the fuse ticking,
+// defuse chords, round stingers, buy-menu ticks. No audio files anywhere.
 
-function ensure() {
-  if (ctx) return ctx;
-  const Ctor = window.AudioContext || window.webkitAudioContext;
-  if (!Ctor) return null;
-  ctx = new Ctor();
-  bus = ctx.createGain();
-  bus.gain.value = muted ? 0 : MASTER;
-  const limiter = ctx.createDynamicsCompressor();
-  limiter.threshold.value = -16;
-  limiter.ratio.value = 7;
-  bus.connect(limiter);
-  limiter.connect(ctx.destination);
-
-  // One second of xorshift white noise, sampled at random offsets per cue.
-  noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-  const data = noiseBuf.getChannelData(0);
-  let state = 0x41c6ce57;
-  for (let i = 0; i < data.length; i += 1) {
-    state ^= state << 13;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    data[i] = ((state >>> 0) / 2147483648) - 1;
+export class Sound {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this.enabled = false;
+    this._noise = null;
   }
-  return ctx;
-}
 
-function unlock() {
-  const audio = ensure();
-  if (audio && audio.state === 'suspended') audio.resume().catch(() => {});
-}
-window.addEventListener('pointerdown', unlock, { passive: true });
-window.addEventListener('keydown', unlock, { passive: true });
-
-function tone(freq, duration, opts = {}) {
-  if (!ctx || ctx.state !== 'running') return;
-  const at = ctx.currentTime + (opts.delay || 0);
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = opts.type || 'sine';
-  osc.frequency.setValueAtTime(Math.max(20, freq), at);
-  if (opts.to) osc.frequency.exponentialRampToValueAtTime(Math.max(20, opts.to), at + duration);
-  gain.gain.setValueAtTime(opts.gain || 0.12, at);
-  gain.gain.exponentialRampToValueAtTime(0.0008, at + duration);
-  osc.connect(gain);
-  gain.connect(bus);
-  osc.start(at);
-  osc.stop(at + duration + 0.02);
-}
-
-function noise(duration, opts = {}) {
-  if (!ctx || ctx.state !== 'running' || !noiseBuf) return;
-  const at = ctx.currentTime + (opts.delay || 0);
-  const src = ctx.createBufferSource();
-  src.buffer = noiseBuf;
-  const filter = ctx.createBiquadFilter();
-  filter.type = opts.filter || 'lowpass';
-  filter.frequency.setValueAtTime(opts.cutoff || 1500, at);
-  if (opts.to) filter.frequency.exponentialRampToValueAtTime(opts.to, at + duration);
-  const gain = ctx.createGain();
-  gain.gain.setValueAtTime(opts.gain || 0.2, at);
-  gain.gain.exponentialRampToValueAtTime(0.0008, at + duration);
-  src.connect(filter);
-  filter.connect(gain);
-  gain.connect(bus);
-  src.start(at, (noiseCursor++ % 17) * 0.031);
-  src.stop(at + duration + 0.01);
-}
-
-export const sound = {
-  shot(kind = 'sidearm', distant = false) {
-    const scale = distant ? 0.42 : 1;
-    if (kind === 'longsight') {
-      noise(0.19, { gain: 0.4 * scale, cutoff: 1800, to: 180 });
-      tone(105, 0.2, { type: 'square', gain: 0.16 * scale, to: 42 });
-    } else if (kind === 'coil') {
-      noise(0.065, { gain: 0.24 * scale, cutoff: 2400, to: 650 });
-      tone(190, 0.055, { type: 'square', gain: 0.09 * scale, to: 95 });
-    } else {
-      noise(0.09, { gain: 0.28 * scale, cutoff: 2100, to: 500 });
-      tone(240, 0.075, { type: 'triangle', gain: 0.1 * scale, to: 100 });
+  // Browsers only hand us an AudioContext after a gesture; call on click.
+  unlock() {
+    if (this.ctx) return;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.5;
+      this.master.connect(this.ctx.destination);
+      const len = this.ctx.sampleRate * 1.2;
+      this._noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const data = this._noise.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+      this.enabled = true;
+    } catch {
+      this.enabled = false;
     }
-  },
-  hit(kill = false) {
-    tone(kill ? 940 : 680, 0.055, { type: 'square', gain: 0.08 });
-    if (kill) tone(1320, 0.1, { type: 'triangle', gain: 0.07, delay: 0.045 });
-  },
-  hurt() {
-    noise(0.12, { gain: 0.12, cutoff: 500 });
-    tone(95, 0.16, { type: 'sawtooth', gain: 0.08, to: 58 });
-  },
+  }
+
+  _env(gain, t0, peak, decay) {
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(Math.max(peak, 0.0002), t0 + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + decay);
+  }
+
+  _burst({ dur = 0.2, peak = 0.5, freq = 1800, q = 0.6, type = 'bandpass', at = 0 }) {
+    if (!this.enabled) return;
+    const t0 = this.ctx.currentTime + at;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this._noise;
+    src.loop = true;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = type;
+    filter.frequency.value = freq;
+    filter.Q.value = q;
+    const g = this.ctx.createGain();
+    this._env(g, t0, peak, dur);
+    src.connect(filter).connect(g).connect(this.master);
+    src.start(t0);
+    src.stop(t0 + dur + 0.05);
+  }
+
+  _tone({ freq = 440, end = null, dur = 0.15, peak = 0.3, type = 'square', at = 0 }) {
+    if (!this.enabled) return;
+    const t0 = this.ctx.currentTime + at;
+    const osc = this.ctx.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    if (end) osc.frequency.exponentialRampToValueAtTime(Math.max(end, 1), t0 + dur);
+    const g = this.ctx.createGain();
+    this._env(g, t0, peak, dur);
+    osc.connect(g).connect(this.master);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.05);
+  }
+
+  // distance 0..1 already muffled by hearing.js — quiet and dull when far
+  shot(kind, dist01 = 0) {
+    const far = 1 - Math.min(dist01, 1);
+    const lp = 700 + far * 3400;
+    if (kind === 'long') {
+      this._burst({ dur: 0.34, peak: 0.65 * far + 0.1, freq: lp, q: 0.4 });
+      this._tone({ freq: 130, end: 42, dur: 0.3, peak: 0.5 * far + 0.08, type: 'sine' });
+    } else if (kind === 'coil') {
+      this._burst({ dur: 0.12, peak: 0.45 * far + 0.07, freq: lp * 1.2, q: 0.7 });
+      this._tone({ freq: 190, end: 70, dur: 0.09, peak: 0.3 * far + 0.05, type: 'triangle' });
+    } else {
+      this._burst({ dur: 0.16, peak: 0.5 * far + 0.08, freq: lp, q: 0.6 });
+      this._tone({ freq: 160, end: 60, dur: 0.12, peak: 0.34 * far + 0.05, type: 'triangle' });
+    }
+  }
+
+  dryFire() { this._tone({ freq: 900, end: 500, dur: 0.05, peak: 0.12 }); }
   reload() {
-    noise(0.035, { gain: 0.06, cutoff: 3300 });
-    tone(360, 0.04, { type: 'square', gain: 0.035, delay: 0.11 });
-  },
-  step() {
-    noise(0.045, { gain: 0.035, cutoff: 520 });
-  },
-  throwPot() {
-    noise(0.1, { gain: 0.07, cutoff: 900 });
-    tone(180, 0.08, { type: 'triangle', gain: 0.04, to: 120 });
-  },
-  explosion() {
-    noise(0.72, { gain: 0.55, cutoff: 950, to: 90 });
-    tone(78, 0.65, { type: 'sine', gain: 0.34, to: 28 });
-  },
-  plant() {
-    tone(420, 0.09, { type: 'square', gain: 0.09 });
-    tone(630, 0.09, { type: 'square', gain: 0.09, delay: 0.11 });
-    tone(840, 0.16, { type: 'square', gain: 0.08, delay: 0.22 });
-  },
-  beep(urgent = false) {
-    tone(urgent ? 1450 : 1080, 0.045, { type: 'square', gain: 0.055 });
-  },
+    this._tone({ freq: 500, end: 300, dur: 0.06, peak: 0.16, type: 'square' });
+    this._tone({ freq: 700, end: 900, dur: 0.07, peak: 0.16, type: 'square', at: 0.35 });
+  }
+  hit(head = false) {
+    if (head) this._tone({ freq: 1400, end: 2100, dur: 0.09, peak: 0.3, type: 'square' });
+    else this._tone({ freq: 800, end: 500, dur: 0.06, peak: 0.22, type: 'square' });
+  }
+  hurt() {
+    this._tone({ freq: 220, end: 110, dur: 0.18, peak: 0.4, type: 'sawtooth' });
+    this._burst({ dur: 0.12, peak: 0.2, freq: 500, q: 1 });
+  }
+  footstep(quiet = false) {
+    this._burst({ dur: 0.05, peak: quiet ? 0.03 : 0.08, freq: 300, q: 1.2, type: 'lowpass' });
+  }
+  bounce() { this._tone({ freq: 300, end: 160, dur: 0.08, peak: 0.2, type: 'triangle' }); }
+  explosion(dist01 = 0) {
+    const far = 1 - Math.min(dist01, 1);
+    this._burst({ dur: 0.8, peak: 0.9 * far + 0.1, freq: 200 + far * 700, q: 0.3, type: 'lowpass' });
+    this._tone({ freq: 90, end: 26, dur: 0.9, peak: 0.8 * far + 0.1, type: 'sine' });
+  }
+  plantBeep() { this._tone({ freq: 1200, dur: 0.05, peak: 0.14, type: 'sine' }); }
+  fuseTick(urgent = false) {
+    this._tone({ freq: urgent ? 1600 : 1050, dur: 0.04, peak: urgent ? 0.2 : 0.12, type: 'sine' });
+  }
+  planted() {
+    this._tone({ freq: 660, dur: 0.12, peak: 0.3, type: 'square' });
+    this._tone({ freq: 880, dur: 0.16, peak: 0.3, type: 'square', at: 0.14 });
+  }
   defused() {
-    [740, 590, 440].forEach((freq, i) => tone(freq, 0.15, { type: 'triangle', gain: 0.08, delay: i * 0.1 }));
-  },
-  round(won) {
-    const notes = won ? [392, 523, 659, 784] : [392, 330, 262];
-    notes.forEach((freq, i) => tone(freq, 0.18, { type: 'triangle', gain: 0.08, delay: i * 0.105 }));
-  },
-  purchase(ok = true) {
-    tone(ok ? 920 : 150, 0.055, { type: 'square', gain: 0.06 });
-    if (ok) tone(1240, 0.07, { type: 'triangle', gain: 0.05, delay: 0.055 });
-  },
-  toggleMute() {
-    muted = !muted;
-    if (bus) bus.gain.setTargetAtTime(muted ? 0 : MASTER, ctx.currentTime, 0.015);
-    return muted;
-  },
-};
+    this._tone({ freq: 520, dur: 0.14, peak: 0.3, type: 'triangle' });
+    this._tone({ freq: 780, dur: 0.2, peak: 0.3, type: 'triangle', at: 0.15 });
+  }
+  stim() { this._tone({ freq: 400, end: 900, dur: 0.4, peak: 0.2, type: 'sine' }); }
+  buy() {
+    this._tone({ freq: 980, dur: 0.05, peak: 0.18, type: 'square' });
+    this._tone({ freq: 1470, dur: 0.08, peak: 0.18, type: 'square', at: 0.06 });
+  }
+  deny() { this._tone({ freq: 240, end: 170, dur: 0.14, peak: 0.2, type: 'square' }); }
+  uiTick() { this._tone({ freq: 700, dur: 0.03, peak: 0.1, type: 'square' }); }
+  roundWin() {
+    this._tone({ freq: 392, dur: 0.16, peak: 0.32, type: 'triangle' });
+    this._tone({ freq: 523, dur: 0.16, peak: 0.32, type: 'triangle', at: 0.16 });
+    this._tone({ freq: 784, dur: 0.34, peak: 0.34, type: 'triangle', at: 0.32 });
+  }
+  roundLose() {
+    this._tone({ freq: 392, dur: 0.2, peak: 0.3, type: 'triangle' });
+    this._tone({ freq: 311, dur: 0.24, peak: 0.3, type: 'triangle', at: 0.18 });
+    this._tone({ freq: 233, dur: 0.42, peak: 0.3, type: 'triangle', at: 0.4 });
+  }
+  matchWin() {
+    [392, 523, 659, 784, 1046].forEach((f, i) =>
+      this._tone({ freq: f, dur: 0.22, peak: 0.32, type: 'triangle', at: i * 0.16 }));
+  }
+  matchLose() {
+    [330, 294, 262, 220].forEach((f, i) =>
+      this._tone({ freq: f, dur: 0.3, peak: 0.3, type: 'triangle', at: i * 0.2 }));
+  }
+}

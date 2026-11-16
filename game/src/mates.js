@@ -1,309 +1,353 @@
-// Tally, Mason and Brack: autonomous crew mates, not decorative followers.
-// They share the guards' navigation grid, sight lines and capsule ballistics;
-// Mason plants the Ember on a quiet lane, everyone fights, everyone can die.
+// mates.js — your crew. Three named mates on the same A* grid and the same
+// physics as the guards: Tally entries ahead, Mason carries the Ember and
+// plants it on the quiet lane, Brack anchors your back. They see, they
+// fight, they die, and the round board remembers their K/D/DMG.
 import * as THREE from 'three';
-import { MATE_NAMES } from './config.js';
-import { PALETTE } from './palette.js';
-import { clearSight, createTracerPool, makeCharacter, rayBodyCapsule, raySphere } from './combat.js';
+import { BOT, MATE_NAMES, clamp } from './config.js';
+import { WeaponState } from './weapon.js';
 
-const CREW = [
-  { role: 'entry', spawn: [-2.1, 12.2], offset: [-1.4, 0.9], phase: 0.4 },
-  { role: 'planter', spawn: [0, 13.2], offset: [1.35, 1.25], phase: 2.2 },
-  { role: 'anchor', spawn: [2.1, 12.2], offset: [0, 2.25], phase: 4.1 },
-];
-const CARBINE = { damage: 11, gap: 0.17, burst: 4, rest: 1.5, spread: 0.025, range: 29 };
+const DEG = Math.PI / 180;
 
-export function createMates(scene, world, bots, nav, hooks = {}) {
-  const items = [];
-  const tracers = createTracerPool(scene, PALETTE.friendly, 16, 0.11);
-  const ray = new THREE.Raycaster();
-  const muzzle = new THREE.Vector3();
-  const dir = new THREE.Vector3();
-  const skull = new THREE.Vector3();
-  let clock = 0;
+function nameSprite(name) {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 32;
+  const g = c.getContext('2d');
+  g.font = 'bold 20px Menlo, monospace';
+  g.textAlign = 'center';
+  g.fillStyle = '#7dd87d';
+  g.shadowColor = '#000';
+  g.shadowBlur = 4;
+  g.fillText(name.toUpperCase(), 64, 22);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+  const s = new THREE.Sprite(mat);
+  s.scale.set(1.4, 0.35, 1);
+  s.position.y = 2.1;
+  return s;
+}
 
-  CREW.forEach((entry, index) => {
-    const body = makeCharacter(scene, 'crew', index === 1 ? 'sand' : 'friendly');
-    body.group.position.set(entry.spawn[0], 0, entry.spawn[1]);
-    items.push({
-      ...body,
-      id: index,
-      name: MATE_NAMES[index],
-      role: entry.role,
-      spawn: entry.spawn,
-      offset: entry.offset,
-      phase: entry.phase,
-      health: 100,
-      alive: true,
-      deathTimer: 0,
-      kills: 0,
-      deaths: 0,
-      dmg: 0,
-      target: null,
-      contactFor: 0,
-      cooldown: 0.4 + index * 0.18,
-      burst: 0,
-      path: null,
-      pathIndex: 0,
-      nextPathAt: 0,
-      mode: 'follow',
-      staged: false,
-      stageFacing: null,
-    });
-  });
+function buildMateMesh(tint) {
+  const g = new THREE.Group();
+  const cloth = new THREE.MeshLambertMaterial({ color: 0x2e3b33 });
+  const skin = new THREE.MeshLambertMaterial({ color: 0x8a7a66 });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.36, 1.15, 8), cloth);
+  body.position.y = 0.85;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.19, 8, 6), skin);
+  head.position.y = 1.66;
+  const band = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.07, 0.22), new THREE.MeshBasicMaterial({ color: tint }));
+  band.position.set(0, 1.55, -0.02);
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.09, 0.58), new THREE.MeshLambertMaterial({ color: 0x22262e }));
+  gun.position.set(0.24, 1.25, -0.28);
+  g.add(body, head, band, gun);
+  return g;
+}
 
-  function face(item, x, z, dt, rate = 9) {
-    const p = item.group.position;
-    const want = Math.atan2(-(x - p.x), -(z - p.z));
-    let delta = want - item.group.rotation.y;
-    while (delta > Math.PI) delta -= Math.PI * 2;
-    while (delta < -Math.PI) delta += Math.PI * 2;
-    item.group.rotation.y += delta * Math.min(1, dt * rate);
+export class Mate {
+  constructor(G, name, role) {
+    this.G = G;
+    this.name = name;
+    this.role = role; // 'entry' | 'carrier' | 'anchor'
+    this.team = 'crew';
+    this.isPlayer = false;
+    this.radius = BOT.radius;
+    this.height = BOT.height;
+    this.eyeY = BOT.eye;
+    this.pos = { x: 0, y: 0, z: 19 };
+    this.yaw = 0;
+    this.alive = true;
+    this.vest = false;
+    this.helm = false;
+    this.hasBomb = false;
+    this.speedNow = 0;
+    this.scoped = false;
+    this.stats = { k: 0, d: 0, dmg: 0 };
+    this._hp = BOT.hp;
+
+    this.ws = new WeaponState(role === 'anchor' ? 'long' : 'coil');
+    this.state = 'push';
+    this.path = null;
+    this.pathIdx = 0;
+    this.goal = null;
+    this.repathT = 0;
+    this.target = null;
+    this.reactT = 0;
+    this.trackT = 0;
+    this.burstLeft = 0;
+    this.pauseT = 0;
+    this.scanT = 0;
+
+    const tint = role === 'carrier' ? 0xffb347 : 0x7dd87d;
+    this.mesh = buildMateMesh(tint);
+    this.mesh.add(nameSprite(name));
+    G.scene.add(this.mesh);
   }
 
-  // Nearest living guard in range and in the open.
-  function acquire(item) {
-    const p = item.group.position;
-    let best = null;
-    let nearest = Infinity;
-    for (const guard of bots.items) {
-      if (!guard.alive) continue;
-      const gp = guard.group.position;
-      const span = Math.hypot(gp.x - p.x, gp.z - p.z);
-      if (span >= nearest || span > CARBINE.range) continue;
-      if (!clearSight(ray, world.solids, p.x, 1.36, p.z, gp.x, 1.08, gp.z, 0.3)) continue;
-      nearest = span;
-      best = guard;
+  get hp() { return this._hp; }
+  set hp(v) { this._hp = v; }
+
+  reset(spawn) {
+    this.pos.x = spawn.x; this.pos.z = spawn.z; this.pos.y = 0;
+    this.yaw = 0;
+    this.alive = true;
+    this._hp = BOT.hp;
+    this.hasBomb = false;
+    this.target = null;
+    this.path = null;
+    this.goal = null;
+    this.trackT = 0;
+    this.ws.mag = this.ws.def.mag;
+    this.ws.reserve = this.ws.def.reserve;
+    this.ws.heat = 0;
+    this.ws.reloadT = 0;
+    this.mesh.visible = true;
+    this.mesh.rotation.z = 0;
+  }
+
+  takeDamage(dmg, part, attacker) {
+    if (!this.alive) return false;
+    this._hp -= dmg;
+    if (this._hp <= 0) {
+      this.alive = false;
+      this.stats.d += 1;
+      if (this.hasBomb) { this.hasBomb = false; this.G.bomb.dropAt(this.pos.x, this.pos.z); }
+      this.mesh.rotation.z = Math.PI / 2 * (this.G.rng() < 0.5 ? 1 : -1);
+      return true;
+    }
+    // getting shot turns a mate toward the shooter
+    if (attacker && !this.target) {
+      this.target = attacker;
+      this.reactT = 0.2 + this.G.rng() * 0.3;
+      this.trackT = 0;
+    }
+    return false;
+  }
+
+  _visibleEnemy() {
+    const G = this.G;
+    let best = null, bestD = BOT.visionDist + 6;
+    for (const e of G.targets.alive('guard')) {
+      const d = Math.hypot(e.pos.x - this.pos.x, e.pos.z - this.pos.z);
+      if (d > bestD) continue;
+      if (!G.targets.canSee(this.pos.x, this.pos.y + this.eyeY, this.pos.z, e.pos.x, e.pos.y + 1.2, e.pos.z)) continue;
+      best = e; bestD = d;
     }
     return best;
   }
 
-  function routeTo(item, x, z) {
-    if (item.path && clock < item.nextPathAt) return;
-    const p = item.group.position;
-    item.path = nav.path(p.x, p.z, x, z) || [[x, z]];
-    item.pathIndex = item.path.length > 1 ? 1 : 0;
-    item.nextPathAt = clock + 0.55;
+  _aimAt(e) {
+    const ty = e.pos.y + 1.25 + clamp(this.trackT / 3, 0, 1) * 0.3;
+    let dx = e.pos.x - this.pos.x, dy = ty - (this.pos.y + this.eyeY), dz = e.pos.z - this.pos.z;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+    dx /= d; dy /= d; dz /= d;
+    const err = (BOT.aimErrorBase * 0.7 + (BOT.aimErrorMin - BOT.aimErrorBase * 0.7) * clamp(this.trackT / 2, 0, 1)) * DEG;
+    const rng = this.G.rng;
+    const a = rng() * Math.PI * 2, r = Math.tan(err) * Math.sqrt(rng());
+    let ux = -dz, uz = dx;
+    const ul = Math.hypot(ux, uz) || 1;
+    ux /= ul; uz /= ul;
+    const ox = dx + ux * Math.cos(a) * r;
+    const oy = dy + Math.sin(a) * r * 0.6;
+    const oz = dz + uz * Math.cos(a) * r;
+    const ol = Math.sqrt(ox * ox + oy * oy + oz * oz) || 1;
+    return { x: ox / ol, y: oy / ol, z: oz / ol };
   }
 
-  function advance(item, dt, pace = 3.65) {
-    if (!item.path || item.pathIndex >= item.path.length) return false;
-    const p = item.group.position;
-    let node = item.path[item.pathIndex];
-    let span = Math.hypot(node[0] - p.x, node[1] - p.z);
-    while (span < 0.27 && item.pathIndex < item.path.length - 1) {
-      item.pathIndex += 1;
-      node = item.path[item.pathIndex];
-      span = Math.hypot(node[0] - p.x, node[1] - p.z);
+  _setGoal(x, z) {
+    if (this.goal && Math.hypot(this.goal.x - x, this.goal.z - z) < 1.5) return;
+    this.goal = { x, z };
+    this.repathT = 0;
+  }
+
+  _followPath(dt, speed = BOT.speed + 0.4) {
+    const G = this.G;
+    this.repathT -= dt;
+    if ((!this.path || this.repathT <= 0) && this.goal) {
+      this.path = G.nav.findPath(this.pos.x, this.pos.z, this.goal.x, this.goal.z);
+      this.pathIdx = 0;
+      this.repathT = BOT.repathSec;
     }
-    if (span < 0.3) {
-      item.path = null;
-      item.leftLeg.rotation.x = item.rightLeg.rotation.x = 0;
-      return false;
-    }
-    const step = Math.min(span, pace * dt);
-    p.x += (node[0] - p.x) / span * step;
-    p.z += (node[1] - p.z) / span * step;
-    face(item, node[0], node[1], dt);
-    const stride = Math.sin(clock * 9 + item.phase) * 0.32;
-    item.leftLeg.rotation.x = stride;
-    item.rightLeg.rotation.x = -stride;
-    return true;
+    if (!this.path || this.pathIdx >= this.path.length) { this.speedNow = 0; return true; }
+    const wp = this.path[this.pathIdx];
+    const dx = wp.x - this.pos.x, dz = wp.z - this.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 0.5) { this.pathIdx++; return this._followPath(dt, speed); }
+    const vx = (dx / d) * speed, vz = (dz / d) * speed;
+    const moved = G.world.move(this.pos.x, this.pos.z, vx * dt, vz * dt, this.radius);
+    this.pos.x = moved.x; this.pos.z = moved.z;
+    this.speedNow = speed;
+    if (!this.target) this.yaw = Math.atan2(-vx, -vz);
+    return false;
   }
 
-  function fire(item, guard, rng) {
-    const p = item.group.position;
-    const gp = guard.group.position;
-    muzzle.set(p.x, 1.34, p.z);
-    const settle = item.contactFor < 0.5 ? 1.8 : item.contactFor < 1.1 ? 1.25 : 1;
-    const spread = CARBINE.spread * settle;
-    dir.set(gp.x - p.x, 1.05 - 1.34, gp.z - p.z).normalize();
-    dir.x += (rng() * 2 - 1) * spread;
-    dir.y += (rng() * 2 - 1) * spread;
-    dir.z += (rng() * 2 - 1) * spread;
-    dir.normalize();
-    ray.set(muzzle, dir);
-    ray.far = CARBINE.range;
-    const wall = ray.intersectObjects(world.solids, false)[0];
-    skull.set(gp.x, 1.57, gp.z);
-    const headSpan = raySphere(muzzle, dir, skull, 0.19);
-    const bodySpan = rayBodyCapsule(muzzle, dir, gp.x, 0, gp.z, 1.74);
-    const targetSpan = Math.min(headSpan, bodySpan);
-    let tracerSpan = Math.min(targetSpan, wall ? wall.distance : CARBINE.range);
-    if (!Number.isFinite(tracerSpan)) tracerSpan = CARBINE.range;
-    tracers.fire(muzzle, dir, tracerSpan, clock);
-    if (hooks.shot) hooks.shot(item);
-    bots.hear(p.x, p.z, 22, 'shot'); // crew fire is loud too — guards react
-
-    if (targetSpan === Infinity || (wall && wall.distance < targetSpan)) return;
-    const headshot = headSpan <= bodySpan;
-    const falloff = Math.max(0.62, 1 - Math.hypot(gp.x - p.x, gp.z - p.z) * 0.008);
-    const amount = Math.round(CARBINE.damage * (headshot ? 2 : 1) * falloff);
-    const result = bots.damage(headshot ? guard.head : guard.torso, amount);
-    item.dmg += result.damage;
-    if (result.killed) {
-      item.kills += 1;
-      if (hooks.kill) hooks.kill(item.name, guard.name, headshot);
+  _fight(dt) {
+    const G = this.G;
+    this.trackT += dt;
+    this.reactT -= dt;
+    this.yaw = Math.atan2(-(this.target.pos.x - this.pos.x), -(this.target.pos.z - this.pos.z));
+    this.speedNow = 0;
+    if (this.reactT > 0) return;
+    if (this.ws.mag <= 0) {
+      if (!this.ws.reloading && this.ws.reserve > 0) this.ws.startReload();
+      return;
+    }
+    if (this.pauseT > 0) { this.pauseT -= dt; return; }
+    if (this.burstLeft <= 0) {
+      this.burstLeft = BOT.burstLen[0] + Math.floor(G.rng() * (BOT.burstLen[1] - BOT.burstLen[0]));
+      return;
+    }
+    if (this.ws.cooldown <= 0) {
+      const dir = this._aimAt(this.target);
+      G.gunplay.fire(this, this.ws, dir.x, dir.y, dir.z);
+      this.burstLeft -= 1;
+      if (this.burstLeft <= 0) this.pauseT = BOT.burstGap[0] + G.rng() * (BOT.burstGap[1] - BOT.burstGap[0]);
     }
   }
 
-  function hitBy(item, amount, part, guard) {
-    if (!item.alive) return false;
-    item.health -= amount;
-    if (item.health > 0) return false;
-    item.alive = false;
-    item.deaths += 1;
-    item.deathTimer = 0;
-    item.path = null;
-    item.target = null;
-    if (hooks.kill) hooks.kill(guard ? guard.name : 'GUARD', item.name, part === 'head');
-    return true;
-  }
+  update(dt) {
+    if (!this.alive) return;
+    const G = this.G;
+    this.ws.update(dt);
 
-  // Mason plants only on a lane with no living guard near the pad.
-  function laneIsQuiet(item) {
-    const p = item.group.position;
-    for (const guard of bots.items) {
-      if (!guard.alive) continue;
-      const gp = guard.group.position;
-      if (Math.hypot(gp.x - p.x, gp.z - p.z) < 7.5) return false;
+    const seen = this._visibleEnemy();
+    if (seen) {
+      if (this.target !== seen) { this.target = seen; this.reactT = 0.25 + G.rng() * 0.3; this.trackT = 0; }
+    } else if (this.target) {
+      this.trackT += dt;
+      if (this.trackT > 1.6 || !this.target.alive) this.target = null;
     }
-    return true;
+    if (this.target && !this.target.alive) this.target = null;
+
+    if (this.target) { this._fight(dt); this._syncMesh(); return; }
+
+    // no fight: do your job
+    if (this.role === 'carrier') this._carrierJob(dt);
+    else if (this.role === 'entry') this._entryJob(dt);
+    else this._anchorJob(dt);
+    this._syncMesh();
   }
 
-  function step(dt, now, playerState, bomb, rng, live) {
-    clock = now;
-    const pp = playerState.position;
-    const sin = Math.sin(playerState.yaw);
-    const cos = Math.cos(playerState.yaw);
+  // the quiet lane: the site with fewer living guards near it
+  _quietSite() {
+    const G = this.G;
+    const [a, b] = G.world.sites;
+    const near = (s) => G.targets.alive('guard').filter((g) => Math.hypot(g.pos.x - s.cx, g.pos.z - s.cz) < 15).length;
+    const na = near(a), nb = near(b);
+    return na <= nb ? a : b;
+  }
 
-    for (const item of items) {
-      if (!item.alive) {
-        item.deathTimer = Math.min(0.5, item.deathTimer + dt);
-        item.group.rotation.x = -1.48 * item.deathTimer / 0.5;
-        item.group.position.y = -0.12 * item.deathTimer / 0.5;
-        continue;
-      }
-      if (item.staged) {
-        if (item.stageFacing) face(item, item.stageFacing[0], item.stageFacing[1], dt);
-        continue;
-      }
-      item.target = live ? acquire(item) : null;
-      if (item.target) {
-        item.mode = 'engage';
-        item.contactFor += dt;
-        const gp = item.target.group.position;
-        face(item, gp.x, gp.z, dt, 10);
-        item.leftLeg.rotation.x = item.rightLeg.rotation.x = 0;
-        item.cooldown -= dt;
-        if (item.contactFor >= 0.27 && item.cooldown <= 0) {
-          item.burst += 1;
-          fire(item, item.target, rng);
-          item.cooldown = CARBINE.gap * (item.burst % CARBINE.burst === 0 ? CARBINE.rest : 1) * (0.92 + rng() * 0.16);
+  _carrierJob(dt) {
+    const G = this.G;
+    const bomb = G.bomb;
+    if (bomb.state === 'planted') {
+      // ring the charge and guard it
+      const d = Math.hypot(this.pos.x - bomb.x, this.pos.z - bomb.z);
+      if (d > 4) { this._setGoal(bomb.x + 2, bomb.z + 2); this._followPath(dt); }
+      else { this.speedNow = 0; this.yaw += Math.sin(G.time * 0.7) * dt * 0.5; }
+      return;
+    }
+    if (this.hasBomb) {
+      const site = this._quietSite();
+      const onSite = G.world.onSite(this.pos.x, this.pos.z);
+      if (onSite) {
+        // plant only when the lane is quiet: no guard seen within 18m
+        const close = G.targets.alive('guard').some((g) => Math.hypot(g.pos.x - this.pos.x, g.pos.z - this.pos.z) < 18);
+        if (!close) {
+          this.speedNow = 0;
+          const p = bomb.planting(this, dt);
+          if (p > 0) G.hud.progress(p, `${this.name.toUpperCase()} IS PLANTING`);
+          return;
         }
-        continue;
+        // too hot: shift position inside the site and wait a beat
+        this._setGoal(site.cx + (G.rng() - 0.5) * 4, site.cz + (G.rng() - 0.5) * 4);
+        this._followPath(dt, 2.5);
+        return;
       }
-      item.contactFor = 0;
-      item.cooldown = Math.max(item.cooldown, 0.1);
-
-      // The planter peels off to a free site when the lane is quiet.
-      if (live && item.role === 'planter' && ['carry', 'planting'].includes(bomb.state.phase)) {
-        const site = bomb.siteAt(item.group.position);
-        if (site && laneIsQuiet(item)) {
-          item.mode = 'plant';
-          item.path = null;
-          face(item, site.x, site.z, dt, 4);
-          continue;
-        }
-      }
-      // A planted charge turns the crew outward to hold the ring.
-      if (live && bomb.state.phase === 'planted') {
-        item.mode = 'hold';
-        const angle = item.phase;
-        const x = bomb.position.x + Math.cos(angle) * 2.35;
-        const z = bomb.position.z + Math.sin(angle) * 2.35;
-        routeTo(item, x, z);
-        if (!advance(item, dt, 3.9)) face(item, x + Math.cos(angle) * 5, z + Math.sin(angle) * 5, dt, 3);
-        continue;
-      }
-
-      item.mode = live ? 'follow' : 'ready';
-      const ox = item.offset[0];
-      const oz = item.offset[1];
-      const x = pp.x + ox * cos + oz * sin;
-      const z = pp.z - ox * sin + oz * cos;
-      if (live && Math.hypot(x - item.group.position.x, z - item.group.position.z) > 0.75) {
-        routeTo(item, x, z);
-        advance(item, dt, item.role === 'entry' ? 4 : 3.65);
-      } else {
-        item.path = null;
-        item.leftLeg.rotation.x = item.rightLeg.rotation.x = 0;
-        const behind = item.role === 'anchor' ? Math.PI : 0;
-        const angle = playerState.yaw + behind;
-        face(item, pp.x - Math.sin(angle) * 5, pp.z - Math.cos(angle) * 5, dt, 3);
-      }
+      this._setGoal(site.cx, site.cz);
+      this._followPath(dt);
+      return;
     }
-
-    // Separation pass: silhouettes and routes must never collapse into one body.
-    for (let a = 0; a < items.length; a += 1) {
-      for (let b = a + 1; b < items.length; b += 1) {
-        const A = items[a];
-        const B = items[b];
-        if (!A.alive || !B.alive || A.staged || B.staged) continue;
-        const dx = B.group.position.x - A.group.position.x;
-        const dz = B.group.position.z - A.group.position.z;
-        const span = Math.hypot(dx, dz);
-        if (span <= 0.01 || span >= 0.72) continue;
-        const push = (0.72 - span) * 0.25;
-        const ax = A.group.position.x - dx / span * push;
-        const az = A.group.position.z - dz / span * push;
-        const bx = B.group.position.x + dx / span * push;
-        const bz = B.group.position.z + dz / span * push;
-        if (nav.free(ax, az)) A.group.position.set(ax, 0, az);
-        if (nav.free(bx, bz)) B.group.position.set(bx, 0, bz);
-      }
+    if (bomb.state === 'dropped') {
+      this._setGoal(bomb.x, bomb.z);
+      const arrived = this._followPath(dt);
+      if (Math.hypot(this.pos.x - bomb.x, this.pos.z - bomb.z) < 1.3) bomb.pickup(this);
+      else if (arrived) this.repathT = 0;
+      return;
     }
-    tracers.step(clock);
+    // someone else has it (you): escort
+    this._escort(dt, G.player.hasBomb ? G.player : null);
   }
 
-  function reset() {
-    for (const item of items) {
-      item.group.position.set(item.spawn[0], 0, item.spawn[1]);
-      item.group.rotation.set(0, 0, 0);
-      item.health = 100;
-      item.alive = true;
-      item.deathTimer = 0;
-      item.target = null;
-      item.contactFor = 0;
-      item.cooldown = 0.4 + item.id * 0.18;
-      item.burst = 0;
-      item.path = null;
-      item.nextPathAt = 0;
-      item.mode = 'follow';
-      item.staged = false;
-      item.stageFacing = null;
-      item.leftLeg.rotation.x = item.rightLeg.rotation.x = 0;
+  _entryJob(dt) {
+    const G = this.G;
+    const site = this._quietSite();
+    // run the lane a few metres ahead of the carrier
+    const mason = G.mates.find((m) => m.role === 'carrier');
+    if (G.bomb.state === 'planted') {
+      const d = Math.hypot(this.pos.x - G.bomb.x, this.pos.z - G.bomb.z);
+      if (d > 6) { this._setGoal(G.bomb.x - 2, G.bomb.z - 2); this._followPath(dt); }
+      else { this.speedNow = 0; this.scanT += dt; this.yaw += Math.sin(this.scanT * 0.6) * dt * 0.6; }
+      return;
     }
-    tracers.reset();
+    if (mason && mason.alive && (mason.hasBomb || G.bomb.state === 'dropped')) {
+      // lead toward the site, staying ahead of Mason
+      const ahead = 5;
+      const dx = site.cx - mason.pos.x, dz = site.cz - mason.pos.z;
+      const d = Math.hypot(dx, dz) || 1;
+      this._setGoal(mason.pos.x + (dx / d) * ahead, mason.pos.z + (dz / d) * ahead);
+      this._followPath(dt);
+    } else {
+      this._setGoal(site.cx, site.cz);
+      this._followPath(dt);
+    }
   }
 
-  return {
-    items,
-    step,
-    reset,
-    hitBy,
-    planter: () => items.find((item) => item.alive && item.mode === 'plant') || null,
-    aliveCount: () => items.reduce((sum, item) => sum + Number(item.alive), 0),
-    // Shot-director hook: freeze a mate into a composed position and facing.
-    stage(marks) {
-      marks.forEach((mark, index) => {
-        if (!mark || !items[index] || !items[index].alive) return;
-        const item = items[index];
-        item.staged = true;
-        item.group.position.set(mark[0], 0, mark[1]);
-        item.stageFacing = [mark[2], mark[3]];
-        item.path = null;
-      });
-    },
-  };
+  _anchorJob(dt) {
+    // Brack lives on your shoulder, four metres back
+    this._escort(dt, this.G.player);
+  }
+
+  _escort(dt, who) {
+    const G = this.G;
+    if (!who || !who.alive) { this.speedNow = 0; return; }
+    const d = Math.hypot(who.pos.x - this.pos.x, who.pos.z - this.pos.z);
+    if (d > 4.5) {
+      this._setGoal(who.pos.x, who.pos.z);
+      this._followPath(dt, d > 10 ? BOT.speed + 1.2 : BOT.speed);
+    } else {
+      this.speedNow = 0;
+      this.scanT += dt;
+      this.yaw += Math.sin(this.scanT * 0.55) * dt * 0.5;
+    }
+  }
+
+  _syncMesh() {
+    this.mesh.position.set(this.pos.x, 0, this.pos.z);
+    this.mesh.rotation.y = this.yaw;
+    if (this.alive && this.speedNow > 0.3) this.mesh.position.y = Math.abs(Math.sin(this.G.time * 9)) * 0.05;
+  }
+}
+
+export class Crew {
+  constructor(G) {
+    this.G = G;
+    this.mates = MATE_NAMES.map((name, i) => new Mate(G, name, ['entry', 'carrier', 'anchor'][i % 3]));
+  }
+
+  reset() {
+    const G = this.G;
+    this.mates.forEach((m, i) => {
+      const spawn = G.spawns.crew[(i + 1) % G.spawns.crew.length];
+      m.reset({ x: spawn.x + (G.rng() - 0.5), z: spawn.z + (G.rng() - 0.5) });
+    });
+    // Mason carries the Ember at the break of every round
+    const mason = this.mates.find((m) => m.role === 'carrier');
+    if (mason) {
+      mason.hasBomb = true;
+      G.bomb.reset(mason);
+    }
+  }
+
+  update(dt) {
+    for (const m of this.mates) m.update(dt);
+  }
 }

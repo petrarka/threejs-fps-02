@@ -1,97 +1,65 @@
-// Pointer-lock input. The rest of the game only ever reads the small state
-// object this module exposes; every DOM and pointer-lock quirk is quarantined
-// here, including the inject/release hooks the deterministic shot scenes use
-// to drive keys without a keyboard.
-export function createInput(canvas, onLockChange) {
-  const held = new Set();
-  const tapped = new Set();
-  const state = {
-    keys: held,
-    locked: false,
-    firing: false,
-    aiming: false,
-    clicks: 0,
-    mouseX: 0,
-    mouseY: 0,
-  };
+// input.js — keyboard and mouse, nothing more. Pointer lock on the canvas,
+// yaw/pitch deltas accumulated per frame, key states by code, and the
+// discrete "pressed this frame" edge the player controller consumes.
+export class Input {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.keys = new Set();
+    this.pressed = new Set();
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    this.firing = false;
+    this.aiming = false;
+    this.fireClicked = false;
+    this.locked = false;
+    this.enabled = true;
 
-  function dropButtons() {
-    state.firing = false;
-    state.aiming = false;
-    state.clicks = 0;
+    document.addEventListener('keydown', (e) => {
+      if (e.repeat) return;
+      this.keys.add(e.code);
+      this.pressed.add(e.code);
+    });
+    document.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    window.addEventListener('blur', () => this.keys.clear());
+
+    canvas.addEventListener('mousedown', (e) => {
+      if (!this.locked) return;
+      if (e.button === 0) { this.firing = true; this.fireClicked = true; }
+      if (e.button === 2) this.aiming = true;
+    });
+    document.addEventListener('mouseup', (e) => {
+      if (e.button === 0) this.firing = false;
+      if (e.button === 2) this.aiming = false;
+    });
+    document.addEventListener('contextmenu', (e) => e.preventDefault());
+    document.addEventListener('mousemove', (e) => {
+      if (!this.locked) return;
+      this.mouseDX += e.movementX;
+      this.mouseDY += e.movementY;
+    });
+    document.addEventListener('pointerlockchange', () => {
+      this.locked = document.pointerLockElement === canvas;
+      if (!this.locked) { this.firing = false; this.aiming = false; this.keys.clear(); }
+    });
   }
 
-  window.addEventListener('keydown', (event) => {
-    if (!held.has(event.code)) tapped.add(event.code);
-    held.add(event.code);
-    if (['Space', 'Tab', 'KeyB'].includes(event.code)) event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => held.delete(event.code));
-  window.addEventListener('blur', () => {
-    held.clear();
-    tapped.clear();
-    dropButtons();
-  });
-  window.addEventListener('contextmenu', (event) => event.preventDefault());
+  lock() {
+    if (!this.locked) this.canvas.requestPointerLock();
+  }
 
-  window.addEventListener('mousemove', (event) => {
-    if (!state.locked) return;
-    state.mouseX += event.movementX;
-    state.mouseY += event.movementY;
-  });
-  window.addEventListener('mousedown', (event) => {
-    if (!state.locked) return;
-    if (event.button === 0) {
-      state.firing = true;
-      state.clicks += 1;
-    } else if (event.button === 2) {
-      state.aiming = true;
-    }
-  });
-  window.addEventListener('mouseup', (event) => {
-    if (event.button === 0) state.firing = false;
-    if (event.button === 2) state.aiming = false;
-  });
-  document.addEventListener('pointerlockchange', () => {
-    state.locked = document.pointerLockElement === canvas;
-    if (!state.locked) {
-      held.clear();
-      tapped.clear();
-      dropButtons();
-      state.mouseX = 0;
-      state.mouseY = 0;
-    }
-    onLockChange(state.locked);
-  });
+  down(code) { return this.keys.has(code); }
+  justPressed(code) { return this.pressed.has(code); }
 
-  return {
-    state,
-    requestLock() { canvas.requestPointerLock(); },
-    consumeLook() {
-      const delta = { x: state.mouseX, y: state.mouseY };
-      state.mouseX = 0;
-      state.mouseY = 0;
-      return delta;
-    },
-    consumeClick() {
-      if (!state.clicks) return false;
-      state.clicks -= 1;
-      return true;
-    },
-    consumeKey(code) {
-      if (!tapped.has(code)) return false;
-      tapped.delete(code);
-      return true;
-    },
-    endFrame() { tapped.clear(); },
-    // Shot-director hooks: deterministic scenes drive keys with no keyboard.
-    injectKey(code) {
-      held.add(code);
-      tapped.add(code);
-    },
-    releaseKey(code) {
-      held.delete(code);
-      tapped.delete(code);
-    },
-  };
+  // consume per-frame accumulators at the end of the player tick
+  consumeMouse() {
+    const d = { x: this.mouseDX, y: this.mouseDY };
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    return d;
+  }
+
+  endFrame() {
+    this.pressed.clear();
+    this.fireClicked = false;
+  }
 }

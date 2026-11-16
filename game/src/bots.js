@@ -1,334 +1,343 @@
-// Nine named yard guards. Each owns a patrol route, perception, an A*
-// destination and a real hitscan weapon. Noise, sight and the planted Ember
-// are the only ways they learn where to go; the dead stay down all round.
+// bots.js — the nine kiln guards. Each one holds a post, scans the lanes,
+// and listens. A noise (gunshot, bounce, the plant) through hearing.js —
+// walls honestly muffling it — sends him to investigate; a visible crew
+// member starts his reaction clock and then aimed, bursted fire with real
+// spread. When the Ember goes in, everyone converges and one kneels to
+// defuse. All of them walk the shared A* grid from nav.js.
 import * as THREE from 'three';
-import { GUARD_NAMES } from './config.js';
-import { PALETTE } from './palette.js';
-import { createHearing } from './hearing.js';
-import { clearSight, createTracerPool, makeCharacter, rayBodyCapsule, raySphere } from './combat.js';
+import { BOT, GUARD_NAMES, WEAPONS, MATCH, clamp } from './config.js';
+import { WeaponState } from './weapon.js';
 
-// Patrol loops, chosen weapons and walking pace per guard.
-const ROUTES = [
-  { gun: 'rifle', pace: 2.45, trim: 'ember', points: [[-17, -13], [-12, -12], [-11, -6], [-16, -4.8]] },
-  { gun: 'rifle', pace: 2.45, trim: 'danger', points: [[17, -13], [12, -12], [11.5, -6], [16, -4.8]] },
-  { gun: 'dmr', pace: 2.05, trim: 'steel', points: [[-3, -10.6], [-3, -7.2], [-1.8, -5.5]] },
-  { gun: 'dmr', pace: 2.05, trim: 'muted', points: [[3, -10.6], [3, -7.2], [1.8, -5.5]] },
-  { gun: 'pistol', pace: 3.0, trim: 'clay', points: [[0, 7], [0, 3], [2.6, 1.8], [-2.6, 1.8]] },
-  { gun: 'rifle', pace: 2.85, trim: 'sand', points: [[-7.4, 11], [-7.4, 5.2], [-8.8, 1], [-15, -3.5]] },
-  { gun: 'pistol', pace: 3.0, trim: 'ember', points: [[8.4, 12], [8.4, 7.5], [11.5, 3.8], [11.5, -3.5]] },
-  { gun: 'rifle', pace: 2.6, trim: 'danger', points: [[-6, -6], [-9, -4], [-5, -1], [0, -4]] },
-  { gun: 'rifle', pace: 2.6, trim: 'muted', points: [[6, -6], [9, -4], [5, -1], [0, -4]] },
-];
+const DEG = Math.PI / 180;
 
-// Guard-side ballistics: burst length and rest rhythm shape the pressure.
-const ARSENAL = {
-  pistol: { damage: 10, gap: 0.31, burst: 3, rest: 1.4, spread: 0.028, range: 22 },
-  rifle: { damage: 9, gap: 0.14, burst: 5, rest: 1.65, spread: 0.024, range: 30 },
-  dmr: { damage: 30, gap: 1.35, burst: 1, rest: 0.7, spread: 0.008, range: 43 },
-};
+function buildGuardMesh() {
+  const g = new THREE.Group();
+  const cloth = new THREE.MeshLambertMaterial({ color: 0x3c2f33 });
+  const hide = new THREE.MeshLambertMaterial({ color: 0x59424a });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.36, 1.15, 8), cloth);
+  body.position.y = 0.85;
+  const shoulders = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6), hide);
+  shoulders.position.y = 1.42;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.19, 8, 6), hide);
+  head.position.y = 1.66;
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.06, 0.1), new THREE.MeshBasicMaterial({ color: 0xff5040 }));
+  visor.position.set(0, 1.68, -0.15);
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.09, 0.62), new THREE.MeshLambertMaterial({ color: 0x22262e }));
+  gun.position.set(0.24, 1.25, -0.3);
+  g.add(body, shoulders, head, visor, gun);
+  return g;
+}
 
-export function createBots(scene, world, nav, hooks = {}) {
-  const items = [];
-  const hitMeshes = [];
-  const hearing = createHearing(world);
-  const tracers = createTracerPool(scene, PALETTE.ember, 22, 0.1);
-  const ray = new THREE.Raycaster();
-  const muzzle = new THREE.Vector3();
-  const dir = new THREE.Vector3();
-  const skull = new THREE.Vector3();
-  let clock = 0;
-  let objective = null;
-  let opponents = null;
+let GUARD_ID = 0;
 
-  ROUTES.forEach((route, index) => {
-    const body = makeCharacter(scene, 'guard', route.trim);
-    const start = route.points[0];
-    body.group.position.set(start[0], 0, start[1]);
-    const item = {
-      ...body,
-      id: index,
-      name: GUARD_NAMES[index],
-      route,
-      gun: ARSENAL[route.gun],
-      health: 100,
-      alive: true,
-      deathTimer: 0,
-      kills: 0,
-      deaths: 0,
-      dmg: 0,
-      waypoint: 1,
-      routeDir: 1,
-      path: null,
-      pathIndex: 0,
-      nextPathAt: 0,
-      noise: new THREE.Vector3(),
-      noiseUntil: 0,
-      noisePriority: 0,
-      cooldown: 0.65 + index * 0.13,
-      burst: 0,
-      contactFor: 0,
-      target: null,
-      phase: index * 1.713,
-      mode: 'patrol',
-    };
-    item.torso.userData = { kind: 'guard', part: 'body', owner: item };
-    item.head.userData = { kind: 'guard', part: 'head', owner: item };
-    hitMeshes.push(item.torso, item.head);
-    items.push(item);
-  });
+export class Guard {
+  constructor(G, name, post) {
+    this.G = G;
+    this.id = GUARD_ID++;
+    this.name = name;
+    this.team = 'guard';
+    this.isPlayer = false;
+    this.radius = BOT.radius;
+    this.height = BOT.height;
+    this.eyeY = BOT.eye;
+    this.pos = { x: post.x, y: 0, z: post.z };
+    this.post = { ...post };
+    this.yaw = G.rng() * Math.PI * 2;
+    this.alive = true;
+    this.vest = false;
+    this.helm = false;
+    this.hasBomb = false;
+    this.speedNow = 0;
+    this.scoped = false;
+    this.stats = { k: 0, d: 0, dmg: 0 };
 
-  function face(item, x, z, dt, rate = 8) {
-    const p = item.group.position;
-    const want = Math.atan2(-(x - p.x), -(z - p.z));
-    let delta = want - item.group.rotation.y;
-    while (delta > Math.PI) delta -= Math.PI * 2;
-    while (delta < -Math.PI) delta += Math.PI * 2;
-    item.group.rotation.y += delta * Math.min(1, dt * rate);
+    // guards carry worn coil-guns tuned to suppress, not delete
+    this.ws = new WeaponState(G.rng() < 0.75 ? 'coil' : 'spark');
+    this.ws.def = { ...this.ws.def, damage: Math.round(this.ws.def.damage * BOT.guardDamageScale) };
+
+    this.state = 'hold';
+    this.scanT = G.rng() * 4;
+    this.path = null;
+    this.pathIdx = 0;
+    this.goal = null;
+    this.repathT = 0;
+    this.target = null;
+    this.lastSeen = null;
+    this.lastSeenT = 0;
+    this.reactT = 0;
+    this.trackT = 0;
+    this.burstLeft = 0;
+    this.pauseT = 0;
+    this.strafeDir = 1;
+    this.strafeT = 0;
+
+    this.mesh = buildGuardMesh();
+    G.scene.add(this.mesh);
+    this._syncMesh(0);
   }
 
-  function routeTo(item, x, z, force = false) {
-    if (!force && item.path && clock < item.nextPathAt) return;
-    item.path = nav.path(item.group.position.x, item.group.position.z, x, z) || [[x, z]];
-    item.pathIndex = item.path.length > 1 ? 1 : 0;
-    item.nextPathAt = clock + 0.65;
+  reset(spawn, post) {
+    this.pos.x = spawn.x; this.pos.z = spawn.z; this.pos.y = 0;
+    this.post = { ...post };
+    this.yaw = Math.atan2(-(0 - spawn.x), -(0 - spawn.z)); // face yard centre
+    this.alive = true;
+    this._hp = BOT.hp;
+    this.state = 'hold';
+    this.path = null;
+    this.goal = null;
+    this.target = null;
+    this.lastSeen = null;
+    this.reactT = 0;
+    this.trackT = 0;
+    this.burstLeft = 0;
+    this.pauseT = 0;
+    this.ws.mag = this.ws.def.mag;
+    this.ws.reserve = this.ws.def.reserve;
+    this.ws.heat = 0;
+    this.mesh.visible = true;
+    this.mesh.rotation.z = 0;
+    this.mesh.position.y = 0;
+    this._syncMesh(0);
   }
 
-  function advance(item, dt, paceScale = 1) {
-    if (!item.path || item.pathIndex >= item.path.length) return false;
-    const p = item.group.position;
-    let node = item.path[item.pathIndex];
-    let span = Math.hypot(node[0] - p.x, node[1] - p.z);
-    while (span < 0.28 && item.pathIndex < item.path.length - 1) {
-      item.pathIndex += 1;
-      node = item.path[item.pathIndex];
-      span = Math.hypot(node[0] - p.x, node[1] - p.z);
+  takeDamage(dmg, part, attacker) {
+    if (!this.alive) return false;
+    this.hp -= dmg;
+    // getting shot pulls your attention even through a wall
+    if (attacker && this.alive) {
+      this.lastSeen = { x: attacker.pos.x, z: attacker.pos.z };
+      this.lastSeenT = 0;
+      if (this.state === 'hold' || this.state === 'investigate') this.state = 'investigate';
     }
-    if (span < 0.28) {
-      item.path = null;
-      item.leftLeg.rotation.x = item.rightLeg.rotation.x = 0;
-      return false;
+    if (this.hp <= 0) {
+      this.alive = false;
+      this.stats.d += 1;
+      this.mesh.rotation.z = Math.PI / 2 * (this.G.rng() < 0.5 ? 1 : -1);
+      this.mesh.position.y = 0.25;
+      return true;
     }
-    const step = Math.min(span, item.route.pace * paceScale * dt);
-    p.x += (node[0] - p.x) / span * step;
-    p.z += (node[1] - p.z) / span * step;
-    face(item, node[0], node[1], dt);
-    const stride = Math.sin(clock * 9 + item.phase) * 0.34;
-    item.leftLeg.rotation.x = stride;
-    item.rightLeg.rotation.x = -stride;
-    return true;
+    return false;
   }
 
-  function canSee(item, x, y, z) {
-    const p = item.group.position;
-    if (Math.hypot(x - p.x, z - p.z) > item.gun.range) return false;
-    return clearSight(ray, world.solids, p.x, 1.36, p.z, x, y, z, 0.32);
+  get hp() { return this._hp ?? BOT.hp; }
+  set hp(v) { this._hp = v; }
+
+  _syncMesh(dt) {
+    this.mesh.position.x = this.pos.x;
+    this.mesh.position.z = this.pos.z;
+    this.mesh.rotation.y = this.yaw;
+    if (this.alive && this.speedNow > 0.3) {
+      this.mesh.position.y = Math.abs(Math.sin(this.G.time * 9)) * 0.05;
+    } else if (this.alive) {
+      this.mesh.position.y = 0;
+    }
   }
 
-  // Pick the nearest visible hostile: the player or any living crew mate.
-  function acquire(item, playerState) {
-    const p = item.group.position;
-    let best = null;
-    let bestSpan = Infinity;
-    const pp = playerState.position;
-    const playerSpan = Math.hypot(pp.x - p.x, pp.z - p.z);
-    if (canSee(item, pp.x, pp.y + (playerState.crouched ? 0.75 : 1.15), pp.z)) {
-      bestSpan = playerSpan;
-      best = {
-        x: pp.x, feetY: pp.y, z: pp.z,
-        height: playerState.height,
-        crouched: playerState.crouched,
-        hurt: item.playerHit,
-      };
+  _setGoal(x, z) {
+    if (this.goal && Math.hypot(this.goal.x - x, this.goal.z - z) < 1.5) return;
+    this.goal = { x, z };
+    this.repathT = 0;
+  }
+
+  _followPath(dt) {
+    const G = this.G;
+    this.repathT -= dt;
+    if ((!this.path || this.repathT <= 0) && this.goal) {
+      this.path = G.nav.findPath(this.pos.x, this.pos.z, this.goal.x, this.goal.z);
+      this.pathIdx = 0;
+      this.repathT = BOT.repathSec;
     }
-    if (opponents) {
-      for (const mate of opponents.mates.items) {
-        if (!mate.alive) continue;
-        const mp = mate.group.position;
-        const span = Math.hypot(mp.x - p.x, mp.z - p.z);
-        if (span >= bestSpan || !canSee(item, mp.x, 1.12, mp.z)) continue;
-        bestSpan = span;
-        best = {
-          x: mp.x, feetY: 0, z: mp.z, height: 1.74, crouched: false,
-          hurt: (amount, part, guard) => opponents.hitMate(mate, amount, part, guard),
-        };
-      }
+    if (!this.path || this.pathIdx >= this.path.length) { this.speedNow = 0; return true; }
+    const wp = this.path[this.pathIdx];
+    const dx = wp.x - this.pos.x, dz = wp.z - this.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 0.45) { this.pathIdx++; return this._followPath(dt); }
+    const vx = (dx / d) * BOT.speed, vz = (dz / d) * BOT.speed;
+    const moved = G.world.move(this.pos.x, this.pos.z, vx * dt, vz * dt, this.radius);
+    this.pos.x = moved.x; this.pos.z = moved.z;
+    this.speedNow = BOT.speed;
+    // face travel direction when not fighting (mesh looks down its -z)
+    if (!this.target) this.yaw = Math.atan2(-vx, -vz);
+    return false;
+  }
+
+  // nearest living crew member he can actually see
+  _visibleEnemy() {
+    const G = this.G;
+    let best = null, bestD = BOT.visionDist;
+    const fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw);
+    for (const e of G.targets.alive('crew')) {
+      const dx = e.pos.x - this.pos.x, dz = e.pos.z - this.pos.z;
+      const d = Math.hypot(dx, dz);
+      if (d > bestD) continue;
+      const dot = (dx / (d || 1)) * fx + (dz / (d || 1)) * fz;
+      if (dot < Math.cos((BOT.visionFov / 2) * DEG) && d > 2.5) continue;
+      if (!G.targets.canSee(this.pos.x, this.pos.y + this.eyeY, this.pos.z, e.pos.x, e.pos.y + 1.2, e.pos.z)) continue;
+      best = e; bestD = d;
     }
     return best;
   }
 
-  // One honest hitscan round at the current target. Aim takes a beat to
-  // settle after first contact — close and early is wild.
-  function fire(item, target, rng) {
-    const p = item.group.position;
-    muzzle.set(p.x, 1.34, p.z);
-    const settle = item.contactFor < 0.55 ? 1.9 : item.contactFor < 1.2 ? 1.3 : 1;
-    const spread = item.gun.spread * settle;
-    const chestY = target.feetY + (target.crouched ? 0.72 : 1.08);
-    dir.set(target.x - p.x, chestY - 1.34, target.z - p.z).normalize();
-    dir.x += (rng() * 2 - 1) * spread;
-    dir.y += (rng() * 2 - 1) * spread;
-    dir.z += (rng() * 2 - 1) * spread;
-    dir.normalize();
-
-    ray.set(muzzle, dir);
-    ray.far = item.gun.range;
-    const wall = ray.intersectObjects(world.solids, false)[0];
-    skull.set(target.x, target.feetY + target.height - 0.17, target.z);
-    const headSpan = raySphere(muzzle, dir, skull, 0.19);
-    const bodySpan = rayBodyCapsule(muzzle, dir, target.x, target.feetY, target.z, target.height);
-    const targetSpan = Math.min(headSpan, bodySpan);
-    let tracerSpan = Math.min(targetSpan, wall ? wall.distance : item.gun.range);
-    if (!Number.isFinite(tracerSpan)) tracerSpan = item.gun.range;
-    tracers.fire(muzzle, dir, tracerSpan, clock);
-    if (hooks.shot) hooks.shot(item);
-
-    if (targetSpan === Infinity || (wall && wall.distance < targetSpan)) return;
-    const headshot = headSpan <= bodySpan;
-    const span = Math.hypot(target.x - p.x, target.z - p.z);
-    const falloff = Math.max(0.58, 1 - span * 0.009);
-    const amount = Math.max(1, Math.round(item.gun.damage * (headshot ? 2.05 : 1) * falloff));
-    item.dmg += amount;
-    const died = target.hurt ? target.hurt(amount, headshot ? 'head' : 'body', item) : false;
-    if (died) item.kills += 1;
+  _aimAt(e) {
+    // aim at chest, drifting to the head as he settles on target
+    const headBias = clamp(this.trackT / 2.5, 0, 1) * 0.35;
+    const ty = e.pos.y + 1.2 + headBias * 0.45;
+    let dx = e.pos.x - this.pos.x;
+    let dy = ty - (this.pos.y + this.eyeY);
+    let dz = e.pos.z - this.pos.z;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+    dx /= d; dy /= d; dz /= d;
+    // cone of error shrinks while he tracks
+    const err = (BOT.aimErrorBase + (BOT.aimErrorMin - BOT.aimErrorBase) * clamp(this.trackT / 2.2, 0, 1)) * DEG;
+    const rng = this.G.rng;
+    const a = rng() * Math.PI * 2, r = Math.tan(err) * Math.sqrt(rng());
+    // build a perpendicular basis
+    let ux = -dz, uz = dx;
+    const ul = Math.hypot(ux, uz) || 1;
+    ux /= ul; uz /= ul;
+    const wx = dy * uz - dz * 0, wy = dz * ux - dx * uz, wz = dx * 0 - dy * ux; // rough cross
+    const ox = dx + (ux * Math.cos(a) + wy) * r;
+    const oy = dy + (Math.sin(a)) * r * 0.6;
+    const oz = dz + (uz * Math.cos(a) + wx) * r * -1;
+    const ol = Math.sqrt(ox * ox + oy * oy + oz * oz) || 1;
+    return { x: ox / ol, y: oy / ol, z: oz / ol };
   }
 
-  function damage(mesh, amount) {
-    const item = mesh.userData.owner;
-    if (!item || !item.alive) return { killed: false, damage: 0, item };
-    const dealt = Math.min(item.health, Math.max(0, Math.round(amount)));
-    item.health -= dealt;
-    if (item.health <= 0) {
-      item.alive = false;
-      item.deaths += 1;
-      item.deathTimer = 0;
-      item.path = null;
-      item.target = null;
-      return { killed: true, damage: dealt, item };
-    }
-    return { killed: false, damage: dealt, item };
-  }
+  update(dt) {
+    if (!this.alive) return;
+    const G = this.G;
+    this.ws.update(dt);
 
-  // Explosion evaluation: falloff by distance, and a wall between the pot and
-  // a guard soaks the burst entirely.
-  function blast(x, y, z, radius, maximum) {
-    const results = [];
-    for (const item of items) {
-      if (!item.alive) continue;
-      const p = item.group.position;
-      const span = Math.hypot(p.x - x, p.y + 0.8 - y, p.z - z);
-      if (span > radius) continue;
-      if (!clearSight(ray, world.solids, x, Math.max(0.2, y), z, p.x, 0.9, p.z, 0.2)) continue;
-      const amount = Math.round(maximum * (1 - 0.8 * span / radius));
-      results.push({ item, ...damage(item.torso, amount) });
-    }
-    return results;
-  }
-
-  function step(dt, now, playerState, onPlayerHit, rng, live) {
-    clock = now;
-    for (const item of items) {
-      if (!item.alive) {
-        item.deathTimer = Math.min(0.5, item.deathTimer + dt);
-        item.group.rotation.x = -1.48 * item.deathTimer / 0.5;
-        item.group.position.y = -0.12 * item.deathTimer / 0.5;
-        continue;
+    // --- senses ---
+    const seen = this._visibleEnemy();
+    if (seen) {
+      if (this.target !== seen) {
+        this.target = seen;
+        this.reactT = BOT.reactionMin + G.rng() * (BOT.reactionMax - BOT.reactionMin);
+        this.trackT = 0;
       }
-      item.playerHit = onPlayerHit;
-      item.target = live ? acquire(item, playerState) : null;
-      if (item.target) {
-        item.mode = 'engage';
-        item.contactFor += dt;
-        face(item, item.target.x, item.target.z, dt, 10);
-        item.leftLeg.rotation.x = item.rightLeg.rotation.x = 0;
-        item.cooldown -= dt;
-        if (item.contactFor >= 0.32 && item.cooldown <= 0) {
-          item.burst += 1;
-          fire(item, item.target, rng);
-          const resting = item.burst % item.gun.burst === 0;
-          item.cooldown = item.gun.gap * (resting ? item.gun.rest : 1) * (0.92 + rng() * 0.16);
+      this.lastSeen = { x: seen.pos.x, z: seen.pos.z };
+      this.lastSeenT = 0;
+    } else {
+      this.lastSeenT += dt;
+      if (this.target && this.lastSeenT > 1.4) {
+        this.target = null;
+        this.state = 'investigate';
+        if (this.lastSeen) this._setGoal(this.lastSeen.x, this.lastSeen.z);
+      }
+    }
+
+    // --- hearing (only when not already fighting) ---
+    if (!this.target) {
+      const heard = G.hearing.loudestFor(this.pos.x, this.pos.y + this.eyeY, this.pos.z);
+      if (heard && heard.loudness > 0.14 && this.state !== 'converge' && this.state !== 'defuse') {
+        this.state = 'investigate';
+        this._setGoal(heard.noise.x, heard.noise.z);
+      }
+    }
+
+    // --- the planted charge outranks everything ---
+    if (G.bomb.state === 'planted' && this.state !== 'converge' && this.state !== 'defuse') {
+      this.state = 'converge';
+      this._setGoal(G.bomb.x, G.bomb.z);
+    }
+
+    // --- act ---
+    if (this.target) {
+      this.trackT += dt;
+      this.reactT -= dt;
+      // face the target
+      this.yaw = Math.atan2(-(this.target.pos.x - this.pos.x), -(this.target.pos.z - this.pos.z));
+      // strafe a little; a moving guard is a fair guard
+      this.strafeT -= dt;
+      if (this.strafeT <= 0) { this.strafeT = 0.7 + G.rng() * 0.8; this.strafeDir = G.rng() < 0.5 ? -1 : 1; }
+      const px = -(this.target.pos.z - this.pos.z), pz = this.target.pos.x - this.pos.x;
+      const pl = Math.hypot(px, pz) || 1;
+      const sx = (px / pl) * this.strafeDir * 1.6 * dt, sz = (pz / pl) * this.strafeDir * 1.6 * dt;
+      const moved = G.world.move(this.pos.x, this.pos.z, sx, sz, this.radius);
+      this.pos.x = moved.x; this.pos.z = moved.z;
+      this.speedNow = 1.6;
+
+      if (this.reactT <= 0) {
+        if (this.ws.mag <= 0) {
+          if (!this.ws.reloading && this.ws.reserve > 0) this.ws.startReload();
+        } else if (this.pauseT > 0) {
+          this.pauseT -= dt;
+        } else if (this.burstLeft <= 0) {
+          this.burstLeft = BOT.burstLen[0] + Math.floor(G.rng() * (BOT.burstLen[1] - BOT.burstLen[0]));
+        } else if (this.ws.cooldown <= 0) {
+          const dir = this._aimAt(this.target);
+          G.gunplay.fire(this, this.ws, dir.x, dir.y, dir.z);
+          this.burstLeft -= 1;
+          if (this.burstLeft <= 0) this.pauseT = BOT.burstGap[0] + G.rng() * (BOT.burstGap[1] - BOT.burstGap[0]);
         }
-        continue;
       }
-      item.contactFor = 0;
-      item.cooldown = Math.max(item.cooldown, 0.12);
-      if (!live) {
-        item.leftLeg.rotation.x = item.rightLeg.rotation.x = 0;
-        continue;
+    } else if (this.state === 'investigate') {
+      const arrived = this._followPath(dt);
+      if (arrived) {
+        this.scanT -= dt;
+        this.yaw += dt * 0.9;
+        if (this.scanT <= 0) {
+          this.scanT = 2 + G.rng() * 3;
+          this.state = G.bomb.state === 'planted' ? 'converge' : 'hold';
+          if (this.state === 'hold') this._setGoal(this.post.x, this.post.z);
+          else this._setGoal(G.bomb.x, G.bomb.z);
+        }
       }
-      if (objective) {
-        // The planted Ember pulls every living guard to the charge.
-        item.mode = 'defuse';
-        routeTo(item, objective.x, objective.z);
-        if (!advance(item, dt, 1.2)) face(item, objective.x, objective.z, dt);
-      } else if (clock < item.noiseUntil) {
-        item.mode = 'investigate';
-        routeTo(item, item.noise.x, item.noise.z);
-        if (!advance(item, dt, 1.05)) face(item, item.noise.x, item.noise.z, dt, 3);
+    } else if (this.state === 'converge') {
+      this._setGoal(G.bomb.x, G.bomb.z);
+      this._followPath(dt);
+      const d = Math.hypot(this.pos.x - G.bomb.x, this.pos.z - G.bomb.z);
+      if (d < 1.6 && G.bomb.state === 'planted') this.state = 'defuse';
+    } else if (this.state === 'defuse') {
+      const d = Math.hypot(this.pos.x - G.bomb.x, this.pos.z - G.bomb.z);
+      if (G.bomb.state !== 'planted') this.state = 'hold';
+      else if (d >= 1.8) this.state = 'converge';
+      else {
+        this.yaw = Math.atan2(-(G.bomb.x - this.pos.x), -(G.bomb.z - this.pos.z));
+        G.bomb.defusing(this, dt);
+      }
+    } else {
+      // hold: drift back to post, scan the lane
+      const d = Math.hypot(this.pos.x - this.post.x, this.pos.z - this.post.z);
+      if (d > 1.2) {
+        this._setGoal(this.post.x, this.post.z);
+        this._followPath(dt);
       } else {
-        item.mode = 'patrol';
-        const point = item.route.points[item.waypoint];
-        const p = item.group.position;
-        if (Math.hypot(point[0] - p.x, point[1] - p.z) < 0.5) {
-          item.waypoint += item.routeDir;
-          if (item.waypoint >= item.route.points.length - 1 || item.waypoint <= 0) item.routeDir *= -1;
-          item.waypoint = Math.max(0, Math.min(item.route.points.length - 1, item.waypoint));
-          item.path = null;
-        } else {
-          routeTo(item, point[0], point[1]);
-          advance(item, dt);
-        }
+        this.speedNow = 0;
+        this.scanT += dt;
+        this.yaw += Math.sin(this.scanT * 0.5) * dt * 0.4;
       }
     }
-    tracers.step(clock);
+
+    if (this.state !== 'defuse') G.bomb.stopDefusing(this);
+    this._syncMesh(dt);
+  }
+}
+
+export class GuardSquad {
+  constructor(G) {
+    this.G = G;
+    // posts: four watching A, four watching B, one roaming mid
+    const posts = [
+      { x: -24, z: -16 }, { x: -19, z: -12 }, { x: -26, z: -9 }, { x: -15, z: -16 },
+      { x: 24, z: -16 }, { x: 19, z: -12 }, { x: 26, z: -9 }, { x: 15, z: -16 },
+      { x: 0, z: -8 },
+    ];
+    this.guards = GUARD_NAMES.map((name, i) => new Guard(G, name, posts[i % posts.length]));
+    this.posts = posts;
   }
 
-  function reset() {
-    objective = null;
-    for (const item of items) {
-      const start = item.route.points[0];
-      item.group.position.set(start[0], 0, start[1]);
-      item.group.rotation.set(0, 0, 0);
-      item.health = 100;
-      item.alive = true;
-      item.deathTimer = 0;
-      item.waypoint = 1;
-      item.routeDir = 1;
-      item.path = null;
-      item.pathIndex = 0;
-      item.nextPathAt = 0;
-      item.noiseUntil = 0;
-      item.cooldown = 0.65 + item.id * 0.13;
-      item.burst = 0;
-      item.contactFor = 0;
-      item.target = null;
-      item.mode = 'patrol';
-      item.leftLeg.rotation.x = item.rightLeg.rotation.x = 0;
-    }
-    tracers.reset();
+  reset() {
+    const G = this.G;
+    this.guards.forEach((g, i) => {
+      const spawn = G.spawns.guards[i % G.spawns.guards.length];
+      const jitter = () => (G.rng() - 0.5) * 2;
+      g.reset({ x: spawn.x + jitter(), z: spawn.z + jitter() * 0.5 }, this.posts[i % this.posts.length]);
+    });
   }
 
-  return {
-    items,
-    hitMeshes,
-    step,
-    reset,
-    damage,
-    blast,
-    hear: (x, z, radius, kind) => hearing.emit(items, x, z, radius, clock, kind),
-    setOpponents(api) { opponents = api; },
-    setObjective(x, z) {
-      objective = x === null ? null : { x, z };
-      for (const item of items) item.path = null;
-    },
-    alivePositions: () => items.filter((item) => item.alive).map((item) => item.group.position),
-    allDown: () => items.every((item) => !item.alive),
-    aliveCount: () => items.reduce((sum, item) => sum + Number(item.alive), 0),
-    // Shot-director hook: place a guard and face him somewhere, deterministically.
-    stage(index, x, z, faceX, faceZ) {
-      const item = items[index];
-      item.group.position.set(x, 0, z);
-      item.group.rotation.y = Math.atan2(-(faceX - x), -(faceZ - z));
-      item.path = null;
-    },
-  };
+  update(dt) {
+    for (const g of this.guards) g.update(dt);
+  }
 }
