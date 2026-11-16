@@ -1,60 +1,60 @@
-// One deterministic navigation grid for guards and crew. Geometry is baked once;
-// routes use eight-way A*, forbid diagonal corner cutting and are string-pulled.
+// The yard's shared navigation layer: one rasterised walkability grid, an
+// eight-way A* with a binary-heap open list, no diagonal corner cutting, and
+// string-pulled waypoints. Guards and crew both route through this grid.
 const CELL = 0.75;
-const WIDTH = 64;
-const DEPTH = 44;
+const COLS = 64;
+const ROWS = 44;
 const ORIGIN_X = -24;
 const ORIGIN_Z = -16.5;
 const CLEARANCE = 0.31;
 
-const indexOf = (x, z) => z * WIDTH + x;
-const clampCell = (value, maximum) => Math.max(0, Math.min(maximum - 1, value));
+const at = (x, z) => z * COLS + x;
+const clamp = (v, max) => Math.max(0, Math.min(max - 1, v));
 
 export function toCell(x, z) {
-  return [
-    clampCell(Math.floor((x - ORIGIN_X) / CELL), WIDTH),
-    clampCell(Math.floor((z - ORIGIN_Z) / CELL), DEPTH),
-  ];
+  return [clamp(Math.floor((x - ORIGIN_X) / CELL), COLS), clamp(Math.floor((z - ORIGIN_Z) / CELL), ROWS)];
 }
 
-export function cellPosition(x, z) {
-  return [ORIGIN_X + (x + 0.5) * CELL, ORIGIN_Z + (z + 0.5) * CELL];
+export function cellCenter(cx, cz) {
+  return [ORIGIN_X + (cx + 0.5) * CELL, ORIGIN_Z + (cz + 0.5) * CELL];
 }
 
-function heuristic(ax, az, bx, bz) {
+// Octile distance: admissible for 8-way grids with sqrt2 diagonals.
+function octile(ax, az, bx, bz) {
   const dx = Math.abs(ax - bx);
   const dz = Math.abs(az - bz);
-  return Math.max(dx, dz) + Math.SQRT2 * Math.min(dx, dz) - Math.min(dx, dz);
+  return Math.max(dx, dz) + (Math.SQRT2 - 1) * Math.min(dx, dz);
 }
 
 export function createNav(world) {
-  const blocked = new Uint8Array(WIDTH * DEPTH);
-  for (const solid of world.colliders) {
-    if (solid.max.y <= 0.56 || solid.min.y > 1.7) continue;
-    const minX = solid.min.x - CLEARANCE;
-    const maxX = solid.max.x + CLEARANCE;
-    const minZ = solid.min.z - CLEARANCE;
-    const maxZ = solid.max.z + CLEARANCE;
-    const [x0, z0] = toCell(minX, minZ);
-    const [x1, z1] = toCell(maxX, maxZ);
-    for (let z = z0; z <= z1; z += 1) {
-      for (let x = x0; x <= x1; x += 1) {
-        const [wx, wz] = cellPosition(x, z);
-        if (wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ) blocked[indexOf(x, z)] = 1;
+  const blocked = new Uint8Array(COLS * ROWS);
+  for (const box of world.colliders) {
+    // Only obstacles that intersect a standing silhouette block a cell.
+    if (box.max.y <= 0.56 || box.min.y > 1.7) continue;
+    const minX = box.min.x - CLEARANCE;
+    const maxX = box.max.x + CLEARANCE;
+    const minZ = box.min.z - CLEARANCE;
+    const maxZ = box.max.z + CLEARANCE;
+    const [cx0, cz0] = toCell(minX, minZ);
+    const [cx1, cz1] = toCell(maxX, maxZ);
+    for (let cz = cz0; cz <= cz1; cz += 1) {
+      for (let cx = cx0; cx <= cx1; cx += 1) {
+        const [wx, wz] = cellCenter(cx, cz);
+        if (wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ) blocked[at(cx, cz)] = 1;
       }
     }
   }
 
   function free(x, z) {
     const [cx, cz] = toCell(x, z);
-    return !blocked[indexOf(cx, cz)];
+    return !blocked[at(cx, cz)];
   }
 
   function lineFree(ax, az, bx, bz) {
-    const distance = Math.hypot(bx - ax, bz - az);
-    const count = Math.max(1, Math.ceil(distance / (CELL * 0.4)));
-    for (let i = 0; i <= count; i += 1) {
-      const t = i / count;
+    const span = Math.hypot(bx - ax, bz - az);
+    const samples = Math.max(1, Math.ceil(span / (CELL * 0.4)));
+    for (let i = 0; i <= samples; i += 1) {
+      const t = i / samples;
       if (!free(ax + (bx - ax) * t, az + (bz - az) * t)) return false;
     }
     return true;
@@ -62,89 +62,120 @@ export function createNav(world) {
 
   function nearestFree(x, z) {
     const [cx, cz] = toCell(x, z);
-    if (!blocked[indexOf(cx, cz)]) return [cx, cz];
-    for (let radius = 1; radius < 8; radius += 1) {
-      for (let dz = -radius; dz <= radius; dz += 1) {
-        for (let dx = -radius; dx <= radius; dx += 1) {
-          if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
+    if (!blocked[at(cx, cz)]) return [cx, cz];
+    for (let ring = 1; ring < 8; ring += 1) {
+      for (let dz = -ring; dz <= ring; dz += 1) {
+        for (let dx = -ring; dx <= ring; dx += 1) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
           const nx = cx + dx;
           const nz = cz + dz;
-          if (nx < 0 || nz < 0 || nx >= WIDTH || nz >= DEPTH) continue;
-          if (!blocked[indexOf(nx, nz)]) return [nx, nz];
+          if (nx < 0 || nz < 0 || nx >= COLS || nz >= ROWS) continue;
+          if (!blocked[at(nx, nz)]) return [nx, nz];
         }
       }
     }
     return null;
   }
 
+  // Minimal binary heap keyed by f-score; keeps long yard routes cheap.
+  function makeHeap() {
+    const keys = [];
+    const vals = [];
+    return {
+      size: () => keys.length,
+      push(key, val) {
+        keys.push(key);
+        vals.push(val);
+        let i = keys.length - 1;
+        while (i > 0) {
+          const parent = (i - 1) >> 1;
+          if (vals[parent] <= vals[i]) break;
+          [keys[parent], keys[i]] = [keys[i], keys[parent]];
+          [vals[parent], vals[i]] = [vals[i], vals[parent]];
+          i = parent;
+        }
+      },
+      pop() {
+        const top = keys[0];
+        const lastKey = keys.pop();
+        const lastVal = vals.pop();
+        if (keys.length) {
+          keys[0] = lastKey;
+          vals[0] = lastVal;
+          let i = 0;
+          for (;;) {
+            const left = i * 2 + 1;
+            const right = left + 1;
+            let small = i;
+            if (left < keys.length && vals[left] < vals[small]) small = left;
+            if (right < keys.length && vals[right] < vals[small]) small = right;
+            if (small === i) break;
+            [keys[small], keys[i]] = [keys[i], keys[small]];
+            [vals[small], vals[i]] = [vals[i], vals[small]];
+            i = small;
+          }
+        }
+        return top;
+      },
+    };
+  }
+
   function path(sx, sz, tx, tz) {
-    const startCell = nearestFree(sx, sz);
-    const goalCell = nearestFree(tx, tz);
-    if (!startCell || !goalCell) return null;
-    const [scx, scz] = startCell;
-    const [gcx, gcz] = goalCell;
-    const start = indexOf(scx, scz);
-    const goal = indexOf(gcx, gcz);
-    if (start === goal) return [[tx, tz]];
+    const from = nearestFree(sx, sz);
+    const goal = nearestFree(tx, tz);
+    if (!from || !goal) return null;
+    const startIdx = at(from[0], from[1]);
+    const goalIdx = at(goal[0], goal[1]);
+    if (startIdx === goalIdx) return [[tx, tz]];
 
-    const cost = new Float32Array(WIDTH * DEPTH).fill(Infinity);
-    const estimate = new Float32Array(WIDTH * DEPTH).fill(Infinity);
-    const parent = new Int32Array(WIDTH * DEPTH).fill(-1);
-    const closed = new Uint8Array(WIDTH * DEPTH);
-    const open = [start];
-    cost[start] = 0;
-    estimate[start] = heuristic(scx, scz, gcx, gcz);
+    const gScore = new Float32Array(COLS * ROWS).fill(Infinity);
+    const parent = new Int32Array(COLS * ROWS).fill(-1);
+    const closed = new Uint8Array(COLS * ROWS);
+    const open = makeHeap();
+    gScore[startIdx] = 0;
+    open.push(startIdx, octile(from[0], from[1], goal[0], goal[1]));
 
-    while (open.length) {
-      let bestAt = 0;
-      for (let i = 1; i < open.length; i += 1) {
-        const a = open[i];
-        const b = open[bestAt];
-        if (estimate[a] < estimate[b] || (estimate[a] === estimate[b] && a < b)) bestAt = i;
-      }
-      const current = open[bestAt];
-      open[bestAt] = open[open.length - 1];
-      open.pop();
+    while (open.size()) {
+      const current = open.pop();
       if (closed[current]) continue;
-      if (current === goal) {
+      if (current === goalIdx) {
         const cells = [];
-        let cursor = current;
-        while (cursor !== -1) {
-          cells.push(cellPosition(cursor % WIDTH, Math.floor(cursor / WIDTH)));
-          cursor = parent[cursor];
+        for (let cursor = current; cursor !== -1; cursor = parent[cursor]) {
+          cells.push(cellCenter(cursor % COLS, Math.floor(cursor / COLS)));
         }
         cells.reverse();
         cells[0] = [sx, sz];
         cells.push([tx, tz]);
-        const smooth = [cells[0]];
+        // String pulling: drop every waypoint visible from an earlier anchor.
+        const route = [cells[0]];
         let anchor = 0;
         for (let i = 2; i < cells.length; i += 1) {
           if (!lineFree(cells[anchor][0], cells[anchor][1], cells[i][0], cells[i][1])) {
-            smooth.push(cells[i - 1]);
+            route.push(cells[i - 1]);
             anchor = i - 1;
           }
         }
-        smooth.push(cells[cells.length - 1]);
-        return smooth;
+        route.push(cells[cells.length - 1]);
+        return route;
       }
       closed[current] = 1;
-      const cx = current % WIDTH;
-      const cz = Math.floor(current / WIDTH);
+      const cx = current % COLS;
+      const cz = Math.floor(current / COLS);
       for (let dz = -1; dz <= 1; dz += 1) {
         for (let dx = -1; dx <= 1; dx += 1) {
           if (!dx && !dz) continue;
           const nx = cx + dx;
           const nz = cz + dz;
-          if (nx < 0 || nz < 0 || nx >= WIDTH || nz >= DEPTH) continue;
-          const next = indexOf(nx, nz);
+          if (nx < 0 || nz < 0 || nx >= COLS || nz >= ROWS) continue;
+          const next = at(nx, nz);
           if (blocked[next] || closed[next]) continue;
-          if (dx && dz && (blocked[indexOf(cx + dx, cz)] || blocked[indexOf(cx, cz + dz)])) continue;
-          const nextCost = cost[current] + (dx && dz ? Math.SQRT2 : 1);
-          if (nextCost >= cost[next]) continue;
-          cost[next] = nextCost;
+          // No squeezing diagonally past a blocked orthogonal neighbour.
+          if (dx && dz && (blocked[at(cx + dx, cz)] || blocked[at(cx, cz + dz)])) continue;
+          const cost = gScore[current] + (dx && dz ? Math.SQRT2 : 1);
+          if (cost >= gScore[next]) continue;
+          gScore[next] = cost;
           parent[next] = current;
-          estimate[next] = nextCost + heuristic(nx, nz, gcx, gcz);
-          open.push(next);
+          open.push(next, cost + octile(nx, nz, goal[0], goal[1]));
         }
       }
     }

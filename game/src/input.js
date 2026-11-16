@@ -1,10 +1,10 @@
-// Browser input only. The simulation receives a small, stable state object and
-// never has to know about DOM events or pointer-lock vendor details.
+// Pointer-lock input. The simulation only ever sees this small state object;
+// every DOM and vendor detail is quarantined here.
 export function createInput(canvas, onLockChange) {
-  const keys = new Set();
-  const pressed = new Set();
+  const held = new Set();
+  const tapped = new Set();
   const state = {
-    keys,
+    keys: held,
     locked: false,
     firing: false,
     aiming: false,
@@ -13,22 +13,22 @@ export function createInput(canvas, onLockChange) {
     mouseY: 0,
   };
 
-  const clearButtons = () => {
+  function dropButtons() {
     state.firing = false;
     state.aiming = false;
     state.clicks = 0;
-  };
+  }
 
   window.addEventListener('keydown', (event) => {
-    if (!keys.has(event.code)) pressed.add(event.code);
-    keys.add(event.code);
+    if (!held.has(event.code)) tapped.add(event.code);
+    held.add(event.code);
     if (['Space', 'Tab', 'KeyB'].includes(event.code)) event.preventDefault();
   });
-  window.addEventListener('keyup', (event) => keys.delete(event.code));
+  window.addEventListener('keyup', (event) => held.delete(event.code));
   window.addEventListener('blur', () => {
-    keys.clear();
-    pressed.clear();
-    clearButtons();
+    held.clear();
+    tapped.clear();
+    dropButtons();
   });
   window.addEventListener('contextmenu', (event) => event.preventDefault());
 
@@ -42,8 +42,9 @@ export function createInput(canvas, onLockChange) {
     if (event.button === 0) {
       state.firing = true;
       state.clicks += 1;
+    } else if (event.button === 2) {
+      state.aiming = true;
     }
-    if (event.button === 2) state.aiming = true;
   });
   window.addEventListener('mouseup', (event) => {
     if (event.button === 0) state.firing = false;
@@ -52,9 +53,9 @@ export function createInput(canvas, onLockChange) {
   document.addEventListener('pointerlockchange', () => {
     state.locked = document.pointerLockElement === canvas;
     if (!state.locked) {
-      keys.clear();
-      pressed.clear();
-      clearButtons();
+      held.clear();
+      tapped.clear();
+      dropButtons();
       state.mouseX = 0;
       state.mouseY = 0;
     }
@@ -63,14 +64,12 @@ export function createInput(canvas, onLockChange) {
 
   return {
     state,
-    requestLock() {
-      canvas.requestPointerLock();
-    },
+    requestLock() { canvas.requestPointerLock(); },
     consumeLook() {
-      const look = { x: state.mouseX, y: state.mouseY };
+      const delta = { x: state.mouseX, y: state.mouseY };
       state.mouseX = 0;
       state.mouseY = 0;
-      return look;
+      return delta;
     },
     consumeClick() {
       if (!state.clicks) return false;
@@ -78,20 +77,19 @@ export function createInput(canvas, onLockChange) {
       return true;
     },
     consumeKey(code) {
-      if (!pressed.has(code)) return false;
-      pressed.delete(code);
+      if (!tapped.has(code)) return false;
+      tapped.delete(code);
       return true;
     },
-    endFrame() {
-      pressed.clear();
-    },
+    endFrame() { tapped.clear(); },
+    // Shot-mode hooks: deterministic scenes drive keys without a real keyboard.
     injectKey(code) {
-      keys.add(code);
-      pressed.add(code);
+      held.add(code);
+      tapped.add(code);
     },
     releaseKey(code) {
-      keys.delete(code);
-      pressed.delete(code);
+      held.delete(code);
+      tapped.delete(code);
     },
   };
 }

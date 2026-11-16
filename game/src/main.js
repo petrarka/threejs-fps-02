@@ -1,8 +1,8 @@
 // Emberline entry point: one seeded fixed-step simulation, one renderer and a
-// deterministic shot director. Ordinary play and screenshot scenes share exactly
-// the same movement, combat, objective and round code.
+// deterministic shot director. Ordinary play and screenshot scenes share the
+// same movement, combat, objective and round code — nothing is faked for shots.
 import * as THREE from 'three';
-import { BASE_FOV, FIXED_DT, SCOPE_FOV, SHOT_NAMES } from './config.js';
+import { FOV_NORMAL, TICK, FOV_SCOPED, SHOTS } from './config.js';
 import { PALETTE } from './palette.js';
 import { createWorld } from './world.js';
 import { createNav } from './nav.js';
@@ -20,16 +20,18 @@ import { createHud } from './hud.js';
 import { createTracerPool } from './combat.js';
 import { sound } from './sound.js';
 
-const parameters = new URLSearchParams(location.search);
-const requestedShot = parameters.get('shot');
-const shot = SHOT_NAMES.includes(requestedShot) ? requestedShot : null;
-let seed = Number.parseInt(parameters.get('seed') || '1', 10) || 1;
+const params = new URLSearchParams(location.search);
+const requested = params.get('shot');
+const shot = SHOTS.includes(requested) ? requested : null;
+
+// Seedable xorshift-flavoured RNG so shot scenes and tracers are reproducible.
+let rngState = Number.parseInt(params.get('seed') || '1', 10) || 1;
 function random() {
-  seed |= 0;
-  seed = (seed + 0x6d2b79f5) | 0;
-  let value = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-  value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
-  return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  rngState |= 0;
+  rngState = (rngState + 0x6d2b79f5) | 0;
+  let v = Math.imul(rngState ^ (rngState >>> 15), 1 | rngState);
+  v = (v + Math.imul(v ^ (v >>> 7), 61 | v)) ^ v;
+  return ((v ^ (v >>> 14)) >>> 0) / 4294967296;
 }
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -43,8 +45,9 @@ renderer.toneMappingExposure = 1.12;
 document.getElementById('game').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 0.05, 150);
+const camera = new THREE.PerspectiveCamera(FOV_NORMAL, innerWidth / innerHeight, 0.05, 150);
 scene.add(camera);
+
 const world = createWorld(scene);
 const nav = createNav(world);
 const targets = createTargets(scene);
@@ -66,14 +69,14 @@ const mates = createMates(scene, world, bots, nav, {
 });
 bots.setOpponents({
   mates,
-  hitMate: (mate, amount, part, guard) => shot ? false : mates.hitBy(mate, amount, part, guard),
+  hitMate: (mate, amount, part, guard) => (shot ? false : mates.hitBy(mate, amount, part, guard)),
 });
 
 const input = createInput(renderer.domElement, onPointerLock);
 const raycaster = new THREE.Raycaster();
-const direction = new THREE.Vector3();
-const muzzle = new THREE.Vector3();
-const shotOrigin = new THREE.Vector3();
+const aimDir = new THREE.Vector3();
+const muzzlePoint = new THREE.Vector3();
+const fireOrigin = new THREE.Vector3();
 const shootables = [...world.solids, ...bots.hitMeshes, ...targets.hitMeshes];
 
 let hp = 100;
@@ -81,7 +84,6 @@ let playerAlive = true;
 let kills = 0;
 let deaths = 0;
 let damageDone = 0;
-let matchScore = 0;
 let time = 0;
 let started = false;
 let roundEnded = false;
@@ -89,8 +91,8 @@ let aiming = false;
 let shotLive = true;
 let frozen = false;
 let accumulator = 0;
-let previousTime = performance.now();
-let footstepDistance = 0;
+let previousNow = performance.now();
+let strideMark = 0;
 let lastBlink = false;
 let roundMessage = '';
 
@@ -98,7 +100,7 @@ function liveNow() {
   return shot ? shotLive : rounds.state.phase === 'live' && !roundEnded && playerAlive;
 }
 
-function boardData(status) {
+function boardSnapshot(status) {
   return {
     rounds: rounds.state,
     player: { name: 'YOU', kills, deaths, dmg: damageDone },
@@ -126,7 +128,7 @@ function aimAt(point) {
 }
 
 function showBoard(status) {
-  hud.showBoard(boardData(status));
+  hud.showBoard(boardSnapshot(status));
 }
 
 function setShop(open) {
@@ -153,9 +155,9 @@ function resetRound() {
   mates.reset();
   targets.reset();
   bomb.reset();
-  const carriedPots = economy.grenadeCount();
+  const carried = economy.grenadeCount();
   economy.grenades.reset();
-  economy.grenades.state.count = carriedPots;
+  economy.grenades.state.count = carried;
   weapon.beginRound();
   playerTracers.reset();
   hud.clearFeed();
@@ -179,7 +181,6 @@ function startMatch() {
   kills = 0;
   deaths = 0;
   damageDone = 0;
-  matchScore = 0;
   economy.reset();
   weapon.resetMatch();
   resetRound();
@@ -213,8 +214,10 @@ function onPlayerHit(rawAmount, part, guard) {
   const amount = economy.mitigate(rawAmount, part);
   hp = Math.max(0, hp - amount);
   hud.hurt();
-  if (hp > 0) sound.hurt();
-  if (hp > 0) return false;
+  if (hp > 0) {
+    sound.hurt();
+    return false;
+  }
   playerAlive = false;
   deaths += 1;
   hud.kill(guard ? guard.name : 'GUARD', 'YOU', part === 'head');
@@ -226,7 +229,7 @@ function buy(slot) {
   if (rounds.state.phase !== 'buy' || !economy.state.shopOpen) return;
   const item = CATALOG[slot - 1];
   if (!item) return;
-  const success = economy.buy(item.key, {
+  const ok = economy.buy(item.key, {
     hp,
     heal(amount) { hp = Math.min(100, hp + amount); },
     ownsWeapon: (index) => weapon.state.unlocked[index],
@@ -234,15 +237,15 @@ function buy(slot) {
     refillAmmo: () => weapon.refillAmmo(),
     ammoFull: () => weapon.ammoFull(),
   });
-  sound.purchase(success);
-  hud.notify(success ? `${item.name} · ISSUED` : 'PURCHASE UNAVAILABLE');
+  sound.purchase(ok);
+  hud.notify(ok ? `${item.name} · ISSUED` : 'PURCHASE UNAVAILABLE');
   setShop(true);
 }
 
 function throwFirepot() {
   if (!liveNow() || economy.grenadeCount() <= 0) return;
-  camera.getWorldDirection(direction);
-  if (economy.throwPot(camera.position, direction)) {
+  camera.getWorldDirection(aimDir);
+  if (economy.throwPot(camera.position, aimDir)) {
     sound.throwPot();
     player.kick(0.012, (random() - 0.5) * 0.012);
   }
@@ -250,37 +253,34 @@ function throwFirepot() {
 
 function fireWeapon() {
   if (!liveNow() || !weapon.ready()) return false;
-  const kick = weapon.fire(random);
-  if (!kick) return false;
+  const impulse = weapon.fire(random);
+  if (!impulse) return false;
   const spread = shot ? 0 : weapon.spread(player.speed(), aiming);
-  camera.getWorldDirection(direction);
-  direction.x += (random() * 2 - 1) * spread;
-  direction.y += (random() * 2 - 1) * spread;
-  direction.z += (random() * 2 - 1) * spread;
-  direction.normalize();
+  camera.getWorldDirection(aimDir);
+  aimDir.x += (random() * 2 - 1) * spread;
+  aimDir.y += (random() * 2 - 1) * spread;
+  aimDir.z += (random() * 2 - 1) * spread;
+  aimDir.normalize();
   scene.updateMatrixWorld(true);
-  shotOrigin.copy(camera.position);
-  raycaster.set(shotOrigin, direction);
+  fireOrigin.copy(camera.position);
+  raycaster.set(fireOrigin, aimDir);
   raycaster.far = 90;
   const hit = raycaster.intersectObjects(shootables, false)[0];
-  weapon.muzzleWorld(muzzle);
-  playerTracers.fire(muzzle, direction, hit ? hit.distance : 75, time);
+  weapon.muzzleWorld(muzzlePoint);
+  playerTracers.fire(muzzlePoint, aimDir, hit ? hit.distance : 75, time);
 
   if (hit && hit.object.userData.owner) {
-    const data = hit.object.userData;
+    const tag = hit.object.userData;
     const spec = weapon.current();
-    const headshot = data.part === 'head';
+    const headshot = tag.part === 'head';
     const falloff = Math.max(0.7, 1 - hit.distance * 0.0045);
     const amount = Math.round(spec.damage * (headshot ? spec.head : 1) * falloff);
-    const result = data.kind === 'guard' ? bots.damage(hit.object, amount) : targets.damage(hit.object, amount);
-    damageDone += data.kind === 'guard' ? result.damage : 0;
-    matchScore += result.killed ? 100 : 10;
-    if (result.killed) {
-      if (data.kind === 'guard') {
-        kills += 1;
-        economy.award('kill');
-        hud.kill('YOU', result.item.name, headshot);
-      }
+    const result = tag.kind === 'guard' ? bots.damage(hit.object, amount) : targets.damage(hit.object, amount);
+    if (tag.kind === 'guard') damageDone += result.damage;
+    if (result.killed && tag.kind === 'guard') {
+      kills += 1;
+      economy.award('kill');
+      hud.kill('YOU', result.item.name, headshot);
     }
     hud.hit(result.killed, !!shot);
     sound.hit(result.killed);
@@ -289,50 +289,47 @@ function fireWeapon() {
   const key = weapon.current().key;
   sound.shot(key);
   bots.hear(body.position.x, body.position.z, key === 'longsight' ? 34 : 26, 'shot');
-  player.kick(kick[0], kick[1]);
+  player.kick(impulse[0], impulse[1]);
   return true;
 }
 
-function applyExplosion(explosion) {
-  const results = bots.blast(explosion.x, explosion.y, explosion.z, 5.4, 118);
+function applyExplosion(blast) {
+  const results = bots.blast(blast.x, blast.y, blast.z, 5.4, 118);
   for (const result of results) {
     damageDone += result.damage;
     if (!result.killed) continue;
     kills += 1;
-    matchScore += 100;
     economy.award('kill');
     hud.kill('YOU', result.item.name, false);
   }
   if (results.length) hud.hit(results.some((result) => result.killed), !!shot);
-  const distance = Math.hypot(body.position.x - explosion.x, body.position.z - explosion.z);
-  if (liveNow() && distance <= 5.4) {
-    const selfDamage = Math.round(70 * (1 - distance / 5.4 * 0.8));
-    onPlayerHit(selfDamage, 'body', null);
+  const span = Math.hypot(body.position.x - blast.x, body.position.z - blast.z);
+  if (liveNow() && span <= 5.4) {
+    onPlayerHit(Math.round(70 * (1 - span / 5.4 * 0.8)), 'body', null);
     player.kick(0.025, (random() - 0.5) * 0.03);
   }
   for (const mate of mates.items) {
     if (!mate.alive) continue;
     const p = mate.group.position;
-    const mateDistance = Math.hypot(p.x - explosion.x, p.z - explosion.z);
-    if (mateDistance < 4.5) mates.hitBy(mate, Math.round(45 * (1 - mateDistance / 5)), 'body', null);
+    const mateSpan = Math.hypot(p.x - blast.x, p.z - blast.z);
+    if (mateSpan < 4.5) mates.hitBy(mate, Math.round(45 * (1 - mateSpan / 5)), 'body', null);
   }
-  bots.hear(explosion.x, explosion.z, 36, 'blast');
+  bots.hear(blast.x, blast.z, 36, 'blast');
   sound.explosion();
 }
 
 function simulate(dt) {
   time += dt;
   if (!shot) {
-    const transition = rounds.tick(dt, bomb.state.phase === 'planted');
-    if (transition === 'live') {
+    const boundary = rounds.tick(dt, bomb.state.phase === 'planted');
+    if (boundary === 'live') {
       setShop(false);
       hud.hideBoard();
-      hud.setPhase?.(null);
       hud.notify('ROUND LIVE · PLANT A OR B');
-    } else if (transition === 'buy') {
+    } else if (boundary === 'buy') {
       resetRound();
       beginBuy(false);
-    } else if (transition === 'timeout') {
+    } else if (boundary === 'timeout') {
       finishRound(false, 'TIME EXPIRED');
     }
   }
@@ -345,19 +342,22 @@ function simulate(dt) {
   economy.step(dt);
   bots.step(dt, time, body, onPlayerHit, random, active);
   mates.step(dt, time, body, bomb, random, active);
-  for (const explosion of economy.takeExplosions()) applyExplosion(explosion);
+  for (const blast of economy.takeExplosions()) applyExplosion(blast);
 
   const holdingUse = active && input.state.keys.has('KeyE');
   const mason = holdingUse ? null : mates.planter();
   const actor = holdingUse ? body.position : mason ? mason.group.position : body.position;
   const event = bomb.step(dt, actor, holdingUse || !!mason, bots.alivePositions());
   if (bomb.state.phase === 'planting') {
-    hud.setUse(mason ? 'MASON · PLANTING EMBER' : 'PLANTING EMBER', bomb.state.plantProgress, mason ? 'COVER THE PLANTER' : 'HOLD E · KEEP THE LANE QUIET');
+    hud.setUse(mason ? 'MASON · PLANTING EMBER' : 'PLANTING EMBER', bomb.state.plantProgress,
+      mason ? 'COVER THE PLANTER' : 'HOLD E · KEEP THE LANE QUIET');
   } else if (bomb.state.phase === 'planted' && bomb.state.defuseProgress > 0) {
     hud.setUse('DEFUSING EMBER', bomb.state.defuseProgress, 'HOLD E BESIDE THE CHARGE');
   } else if (bomb.state.phase === 'planted' && bomb.state.guardDefuse > 0) {
     hud.setUse('GUARD ON THE CHARGE', bomb.state.guardDefuse / 6.5, 'STOP THE DEFUSE');
-  } else hud.setUse(null, 0);
+  } else {
+    hud.setUse(null, 0);
+  }
 
   if (event === 'planted') {
     economy.award('plant');
@@ -383,8 +383,8 @@ function simulate(dt) {
 function phaseText() {
   if (shot) return null;
   if (rounds.state.phase === 'buy') {
-    const point = rounds.state.crew === 7 || rounds.state.guards === 7;
-    return `${point ? 'MATCH POINT · ' : ''}BUY PHASE · ${Math.ceil(rounds.state.clock)} · B SUPPLY`;
+    const matchPoint = rounds.state.crew === 7 || rounds.state.guards === 7;
+    return `${matchPoint ? 'MATCH POINT · ' : ''}BUY PHASE · ${Math.ceil(rounds.state.clock)} · B SUPPLY`;
   }
   if (rounds.state.phase === 'over') return roundMessage;
   return null;
@@ -392,10 +392,10 @@ function phaseText() {
 
 function updatePresentation(dt) {
   aiming = !!(input.state.aiming && weapon.state.index === 2 && liveNow() && !economy.state.shopOpen);
-  const desiredFov = aiming ? SCOPE_FOV : BASE_FOV;
-  const nextFov = THREE.MathUtils.damp(camera.fov, desiredFov, 15, dt);
-  if (Math.abs(nextFov - camera.fov) > 0.001) {
-    camera.fov = nextFov;
+  const wantFov = aiming ? FOV_SCOPED : FOV_NORMAL;
+  const fov = THREE.MathUtils.damp(camera.fov, wantFov, 15, dt);
+  if (Math.abs(fov - camera.fov) > 0.001) {
+    camera.fov = fov;
     camera.updateProjectionMatrix();
   }
   hud.scope(aiming);
@@ -421,8 +421,7 @@ function handleInput() {
   const look = input.consumeLook();
   player.look(look.x, look.y, aiming ? 0.38 : 1);
   if (input.consumeKey('KeyM')) {
-    const muted = sound.toggleMute();
-    hud.notify(muted ? 'AUDIO MUTED' : 'AUDIO ON');
+    hud.notify(sound.toggleMute() ? 'AUDIO MUTED' : 'AUDIO ON');
   }
   if (input.consumeKey('KeyB') && rounds.state.phase === 'buy' && !roundEnded) setShop(!economy.state.shopOpen);
   if (economy.state.shopOpen) {
@@ -436,8 +435,8 @@ function handleInput() {
     if (input.consumeKey('KeyR') && weapon.reload()) sound.reload();
     if (input.consumeKey('KeyG')) throwFirepot();
   }
-  const showTab = input.state.keys.has('Tab') && !economy.state.shopOpen && started && !roundEnded;
-  if (showTab) showBoard('LIVE ROSTER · RELEASE TAB TO RETURN');
+  const tabOpen = input.state.keys.has('Tab') && !economy.state.shopOpen && started && !roundEnded;
+  if (tabOpen) showBoard('LIVE ROSTER · RELEASE TAB TO RETURN');
   else if (rounds.state.phase === 'live') hud.hideBoard();
   input.endFrame();
 }
@@ -445,10 +444,9 @@ function handleInput() {
 function onPointerLock(locked) {
   if (shot) return;
   if (locked) {
-    if (rounds.state.phase === 'match') startMatch();
     started = true;
     hud.hideOverlay();
-    if (rounds.state.phase === 'idle') startMatch();
+    if (rounds.state.phase === 'idle' || rounds.state.phase === 'match') startMatch();
   } else {
     economy.state.shopOpen = false;
     hud.hideShop();
@@ -462,23 +460,23 @@ hud.onPlay(() => {
 
 function frame(now) {
   requestAnimationFrame(frame);
-  const dt = Math.min(0.1, Math.max(0, (now - previousTime) / 1000));
-  previousTime = now;
+  const dt = Math.min(0.1, Math.max(0, (now - previousNow) / 1000));
+  previousNow = now;
   if (!frozen) {
     if (started && input.state.locked) {
       handleInput();
       accumulator += dt;
-      let count = 0;
-      while (accumulator >= FIXED_DT && count < 6) {
-        simulate(FIXED_DT);
-        accumulator -= FIXED_DT;
-        count += 1;
+      let steps = 0;
+      while (accumulator >= TICK && steps < 6) {
+        simulate(TICK);
+        accumulator -= TICK;
+        steps += 1;
       }
-      if (accumulator > FIXED_DT * 6) accumulator = 0;
+      if (accumulator > TICK * 6) accumulator = 0;
       if (liveNow() && body.grounded && player.speed() > 1.2) {
-        footstepDistance += player.speed() * dt;
-        if (footstepDistance > 2.35) {
-          footstepDistance = 0;
+        strideMark += player.speed() * dt;
+        if (strideMark > 2.35) {
+          strideMark = 0;
           sound.step();
           bots.hear(body.position.x, body.position.z, 7, 'step');
         }
@@ -494,7 +492,7 @@ function frame(now) {
 }
 
 function settle(steps) {
-  for (let i = 0; i < steps; i += 1) simulate(FIXED_DT);
+  for (let i = 0; i < steps; i += 1) simulate(TICK);
 }
 
 function prepareLive(roundNumber = 1, clock = 90) {
@@ -597,7 +595,6 @@ function runShot(name) {
     aimAt(new THREE.Vector3(0, 1.8, -7));
     settle(8);
     setShop(true);
-    hud.setPhase?.(null);
   } else if (name === 'match') {
     hud.hideOverlay();
     rounds.start();
@@ -639,10 +636,10 @@ function runShot(name) {
     settle(5);
     hud.showOverlay('victory', { crew: 8, guards: 5, kills, dmg: damageDone });
   }
-  updatePresentation(FIXED_DT);
+  updatePresentation(TICK);
   renderer.render(scene, camera);
   let painted = 0;
-  function paintShot() {
+  function repaint() {
     updatePresentation(0);
     renderer.render(scene, camera);
     painted += 1;
@@ -650,11 +647,11 @@ function runShot(name) {
       frozen = true;
       window.__shotReady = true;
     }
-    // Headless Chrome may discard a non-preserved WebGL buffer after compositing.
-    // Repaint the frozen scene without advancing the deterministic simulation.
-    requestAnimationFrame(paintShot);
+    // Headless Chrome may drop a non-preserved WebGL buffer after compositing;
+    // repaint the frozen scene without advancing the deterministic simulation.
+    requestAnimationFrame(repaint);
   }
-  requestAnimationFrame(paintShot);
+  requestAnimationFrame(repaint);
 }
 
 window.addEventListener('resize', () => {
@@ -663,10 +660,13 @@ window.addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-// Read-only diagnostics are handy for deterministic capture tooling and do not
-// alter the simulation or bypass any live-game rule.
-window.__EMBERLINE__ = { rounds, bots, mates, bomb, economy, weapon, player, scene, camera, renderer, get hp() { return hp; } };
+// Read-only diagnostics for deterministic capture tooling; they never alter
+// the simulation or bypass a live-game rule.
+window.__EMBERLINE__ = {
+  rounds, bots, mates, bomb, economy, weapon, player, scene, camera, renderer,
+  get hp() { return hp; },
+};
 syncCamera();
-updatePresentation(FIXED_DT);
+updatePresentation(TICK);
 if (shot) runShot(shot);
 else requestAnimationFrame(frame);

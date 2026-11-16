@@ -1,78 +1,79 @@
-// Shared combat primitives and low-poly combatant visuals. Both teams use the
-// same capsule maths, wall queries and tracer implementation; only decisions differ.
+// Ballistic primitives and combatant meshes shared by both teams. The ray
+// tests are exact (sphere, capped cylinder), not closest-approach guesses, so
+// a head sphere plus a body capsule behave like honest hitboxes.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
-export function raySphere(origin, direction, center, radius) {
-  const lx = center.x - origin.x;
-  const ly = center.y - origin.y;
-  const lz = center.z - origin.z;
-  const projection = lx * direction.x + ly * direction.y + lz * direction.z;
-  const c = lx * lx + ly * ly + lz * lz - radius * radius;
-  if (c > 0 && projection < 0) return Infinity;
-  const discriminant = projection * projection - c;
-  if (discriminant < 0) return Infinity;
-  const near = projection - Math.sqrt(discriminant);
+export function raySphere(origin, dir, center, radius) {
+  const ox = center.x - origin.x;
+  const oy = center.y - origin.y;
+  const oz = center.z - origin.z;
+  const along = ox * dir.x + oy * dir.y + oz * dir.z;
+  const offSq = ox * ox + oy * oy + oz * oz - radius * radius;
+  if (offSq > 0 && along < 0) return Infinity;
+  const disc = along * along - offSq;
+  if (disc < 0) return Infinity;
+  const root = Math.sqrt(disc);
+  const near = along - root;
   if (near >= 0) return near;
-  const far = projection + Math.sqrt(discriminant);
+  const far = along + root;
   return far >= 0 ? far : Infinity;
 }
 
-function rayCylinder(origin, direction, x, z, lowY, highY, radius) {
-  const ox = origin.x - x;
-  const oz = origin.z - z;
-  const a = direction.x * direction.x + direction.z * direction.z;
+function rayWallCylinder(origin, dir, x, z, yLow, yHigh, radius) {
+  const relX = origin.x - x;
+  const relZ = origin.z - z;
+  const a = dir.x * dir.x + dir.z * dir.z;
   if (a < 1e-9) return Infinity;
-  const b = 2 * (ox * direction.x + oz * direction.z);
-  const c = ox * ox + oz * oz - radius * radius;
-  const d = b * b - 4 * a * c;
-  if (d < 0) return Infinity;
-  const root = Math.sqrt(d);
-  const candidates = [(-b - root) / (2 * a), (-b + root) / (2 * a)];
-  let nearest = Infinity;
-  for (const t of candidates) {
+  const b = 2 * (relX * dir.x + relZ * dir.z);
+  const c = relX * relX + relZ * relZ - radius * radius;
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return Infinity;
+  const root = Math.sqrt(disc);
+  let best = Infinity;
+  for (const t of [(-b - root) / (2 * a), (-b + root) / (2 * a)]) {
     if (t < 0) continue;
-    const y = origin.y + direction.y * t;
-    if (y >= lowY && y <= highY) nearest = Math.min(nearest, t);
+    const y = origin.y + dir.y * t;
+    if (y >= yLow && y <= yHigh && t < best) best = t;
   }
-  return nearest;
+  return best;
 }
 
-// A vertical capsule is a cylinder with hemispherical caps. Testing all three
-// pieces avoids the forgiving "closest approach" approximation of many bot shooters.
-export function rayBodyCapsule(origin, direction, x, feetY, z, height, radius = 0.29) {
+// Vertical capsule = cylinder body + two hemisphere caps, tested as three pieces.
+export function rayBodyCapsule(origin, dir, x, feetY, z, height, radius = 0.29) {
   const r = Math.min(radius, height * 0.25);
   const low = feetY + r;
   const high = feetY + height - r;
-  let nearest = rayCylinder(origin, direction, x, z, low, high, r);
-  const center = new THREE.Vector3();
-  center.set(x, low, z);
-  nearest = Math.min(nearest, raySphere(origin, direction, center, r));
-  center.y = high;
-  nearest = Math.min(nearest, raySphere(origin, direction, center, r));
-  return nearest;
+  let best = rayWallCylinder(origin, dir, x, z, low, high, r);
+  const cap = new THREE.Vector3(x, low, z);
+  best = Math.min(best, raySphere(origin, dir, cap, r));
+  cap.y = high;
+  return Math.min(best, raySphere(origin, dir, cap, r));
 }
 
-const sightOrigin = new THREE.Vector3();
-const sightDirection = new THREE.Vector3();
+const eyePoint = new THREE.Vector3();
+const aimDir = new THREE.Vector3();
+
+// True when a straight ear/eye line between two points crosses no world solid.
 export function clearSight(ray, solids, ax, ay, az, bx, by, bz, slack = 0.15) {
-  sightOrigin.set(ax, ay, az);
-  sightDirection.set(bx - ax, by - ay, bz - az);
-  const distance = sightDirection.length();
-  if (distance < 0.001) return true;
-  sightDirection.divideScalar(distance);
-  ray.set(sightOrigin, sightDirection);
-  ray.far = distance;
+  eyePoint.set(ax, ay, az);
+  aimDir.set(bx - ax, by - ay, bz - az);
+  const span = aimDir.length();
+  if (span < 0.001) return true;
+  aimDir.divideScalar(span);
+  ray.set(eyePoint, aimDir);
+  ray.far = span;
   const hit = ray.intersectObjects(solids, false)[0];
-  return !hit || hit.distance >= distance - slack;
+  return !hit || hit.distance >= span - slack;
 }
 
+// One low-poly silhouette for every combatant; team and accent vary the trim.
 export function makeCharacter(scene, team, accentName) {
   const group = new THREE.Group();
   const uniform = new THREE.MeshStandardMaterial({
     color: team === 'crew' ? '#526a70' : '#4a4649', roughness: 0.86,
   });
-  const armor = new THREE.MeshStandardMaterial({
+  const plate = new THREE.MeshStandardMaterial({
     color: team === 'crew' ? '#263b43' : '#302d31', roughness: 0.68, metalness: 0.12,
   });
   const trim = new THREE.MeshStandardMaterial({
@@ -81,19 +82,20 @@ export function makeCharacter(scene, team, accentName) {
   const dark = new THREE.MeshStandardMaterial({ color: '#171b21', roughness: 0.55, metalness: 0.35 });
   const skin = new THREE.MeshStandardMaterial({ color: '#bd9474', roughness: 0.9 });
 
-  const leftLeg = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.65, 0.22), uniform);
-  const rightLeg = leftLeg.clone();
+  const legGeo = new THREE.BoxGeometry(0.18, 0.65, 0.22);
+  const leftLeg = new THREE.Mesh(legGeo, uniform);
+  const rightLeg = new THREE.Mesh(legGeo, uniform);
   leftLeg.position.set(-0.14, 0.34, 0);
   rightLeg.position.set(0.14, 0.34, 0);
   const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.44, 4, 8), uniform);
   torso.position.y = 1.02;
-  const vest = new THREE.Mesh(new THREE.BoxGeometry(0.53, 0.48, 0.32), armor);
+  const vest = new THREE.Mesh(new THREE.BoxGeometry(0.53, 0.48, 0.32), plate);
   vest.position.set(0, 1.03, -0.015);
   const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.065, 0.345), trim);
   stripe.position.set(0, 1.14, -0.02);
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.175, 12, 8), skin);
   head.position.y = 1.56;
-  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.192, 12, 6, 0, Math.PI * 2, 0, Math.PI * 0.55), armor);
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.192, 12, 6, 0, Math.PI * 2, 0, Math.PI * 0.55), plate);
   helmet.position.y = 1.59;
   const visor = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.055, 0.045), trim);
   visor.position.set(0, 1.59, -0.157);
@@ -110,14 +112,16 @@ export function makeCharacter(scene, team, accentName) {
 
   group.add(leftLeg, rightLeg, torso, vest, stripe, head, helmet, visor, gun, barrel, arm, muzzle);
   group.traverse((node) => {
-    if (!node.isMesh) return;
-    node.castShadow = true;
-    node.receiveShadow = true;
+    if (node.isMesh) {
+      node.castShadow = true;
+      node.receiveShadow = true;
+    }
   });
   scene.add(group);
   return { group, torso, head, leftLeg, rightLeg, gun, muzzle, trim };
 }
 
+// A ring-buffer of fading line segments: cheap, deterministic tracers.
 export function createTracerPool(scene, tint, count = 18, lifetime = 0.11) {
   const slots = [];
   for (let i = 0; i < count; i += 1) {
@@ -128,20 +132,18 @@ export function createTracerPool(scene, tint, count = 18, lifetime = 0.11) {
     line.frustumCulled = false;
     line.visible = false;
     scene.add(line);
-    slots.push({ line, expires: 0, born: 0 });
+    slots.push({ line, born: 0, expires: 0 });
   }
   let cursor = 0;
+
   return {
-    fire(origin, direction, distance, time) {
+    fire(origin, dir, distance, time) {
       const slot = slots[cursor];
       cursor = (cursor + 1) % slots.length;
-      const positions = slot.line.geometry.attributes.position;
-      positions.setXYZ(0, origin.x, origin.y, origin.z);
-      positions.setXYZ(1,
-        origin.x + direction.x * distance,
-        origin.y + direction.y * distance,
-        origin.z + direction.z * distance);
-      positions.needsUpdate = true;
+      const attr = slot.line.geometry.attributes.position;
+      attr.setXYZ(0, origin.x, origin.y, origin.z);
+      attr.setXYZ(1, origin.x + dir.x * distance, origin.y + dir.y * distance, origin.z + dir.z * distance);
+      attr.needsUpdate = true;
       slot.born = time;
       slot.expires = time + lifetime;
       slot.line.material.opacity = 0.95;
@@ -152,9 +154,9 @@ export function createTracerPool(scene, tint, count = 18, lifetime = 0.11) {
         if (!slot.line.visible) continue;
         if (time >= slot.expires) {
           slot.line.visible = false;
-          continue;
+        } else {
+          slot.line.material.opacity = 0.95 * (slot.expires - time) / (slot.expires - slot.born);
         }
-        slot.line.material.opacity = 0.95 * (slot.expires - time) / (slot.expires - slot.born);
       }
     },
     reset() {

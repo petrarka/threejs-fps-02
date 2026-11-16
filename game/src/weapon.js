@@ -1,6 +1,6 @@
-// Three deliberately different weapons, each with a fixed recoil signature and a
-// heat-driven accuracy model. The arsenal owns ammunition and view models; main
-// owns the actual ray so walls and hitboxes are resolved in one place.
+// The arsenal: three deliberately different weapons, each with a fixed recoil
+// signature and a heat-driven accuracy model. This module owns ammunition,
+// timing and the first-person view models; the match loop owns the actual ray.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
@@ -38,19 +38,20 @@ export function createWeapon(camera) {
     time: 0,
     recoil: 0,
   };
-  const ammo = WEAPONS.map((weapon) => ({ mag: weapon.magazine, reserve: weapon.reserve }));
+  const ammo = WEAPONS.map((spec) => ({ mag: spec.magazine, reserve: spec.reserve }));
+
   const rig = new THREE.Group();
   rig.position.set(0.31, -0.27, -0.59);
   rig.scale.setScalar(0.84);
   camera.add(rig);
 
   const gunmetal = new THREE.MeshStandardMaterial({ color: '#252a31', metalness: 0.72, roughness: 0.33 });
-  const steel = new THREE.MeshStandardMaterial({ color: '#59616a', metalness: 0.65, roughness: 0.4 });
-  const grip = new THREE.MeshStandardMaterial({ color: '#171a20', roughness: 0.9 });
-  const ember = new THREE.MeshStandardMaterial({ color: PALETTE.ember, emissive: PALETTE.ember, emissiveIntensity: 0.65 });
-  const glove = new THREE.MeshStandardMaterial({ color: '#3d4a4b', roughness: 0.95 });
+  const brightSteel = new THREE.MeshStandardMaterial({ color: '#59616a', metalness: 0.65, roughness: 0.4 });
+  const polymer = new THREE.MeshStandardMaterial({ color: '#171a20', roughness: 0.9 });
+  const emberGlass = new THREE.MeshStandardMaterial({ color: PALETTE.ember, emissive: PALETTE.ember, emissiveIntensity: 0.65 });
+  const gloveMat = new THREE.MeshStandardMaterial({ color: '#3d4a4b', roughness: 0.95 });
 
-  function part(group, size, position, material, rotation = null) {
+  function piece(group, size, position, material, rotation = null) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
     mesh.position.set(...position);
     if (rotation) mesh.rotation.set(...rotation);
@@ -61,55 +62,59 @@ export function createWeapon(camera) {
   function buildModel(index) {
     const group = new THREE.Group();
     if (index === 0) {
-      part(group, [0.12, 0.13, 0.39], [0, 0, -0.05], gunmetal);
-      part(group, [0.105, 0.055, 0.34], [0, 0.083, -0.08], steel);
-      part(group, [0.095, 0.25, 0.12], [0, -0.16, 0.07], grip, [-0.2, 0, 0]);
-      part(group, [0.025, 0.035, 0.025], [0, 0.126, -0.22], ember);
-      part(group, [0.038, 0.038, 0.18], [0, 0.015, -0.32], gunmetal);
+      // EMBERETTE sidearm: compact slide-and-grip profile.
+      piece(group, [0.12, 0.13, 0.39], [0, 0, -0.05], gunmetal);
+      piece(group, [0.105, 0.055, 0.34], [0, 0.083, -0.08], brightSteel);
+      piece(group, [0.095, 0.25, 0.12], [0, -0.16, 0.07], polymer, [-0.2, 0, 0]);
+      piece(group, [0.025, 0.035, 0.025], [0, 0.126, -0.22], emberGlass);
+      piece(group, [0.038, 0.038, 0.18], [0, 0.015, -0.32], gunmetal);
     } else if (index === 1) {
-      part(group, [0.14, 0.18, 0.55], [0, 0, -0.14], gunmetal);
-      part(group, [0.11, 0.29, 0.12], [0, -0.19, -0.02], grip, [-0.13, 0, 0]);
-      part(group, [0.12, 0.22, 0.15], [0, -0.16, -0.3], grip);
-      part(group, [0.11, 0.11, 0.32], [0, -0.025, 0.27], grip);
+      // COIL-9: squat induction hose with a glowing toroid stack.
+      piece(group, [0.14, 0.18, 0.55], [0, 0, -0.14], gunmetal);
+      piece(group, [0.11, 0.29, 0.12], [0, -0.19, -0.02], polymer, [-0.13, 0, 0]);
+      piece(group, [0.12, 0.22, 0.15], [0, -0.16, -0.3], polymer);
+      piece(group, [0.11, 0.11, 0.32], [0, -0.025, 0.27], polymer);
       for (let i = 0; i < 4; i += 1) {
-        const coil = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.012, 5, 12), ember);
+        const coil = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.012, 5, 12), emberGlass);
         coil.position.set(0, 0.025, -0.28 - i * 0.065);
         group.add(coil);
       }
-      part(group, [0.045, 0.045, 0.3], [0, 0.02, -0.54], gunmetal);
-      part(group, [0.035, 0.09, 0.05], [0, 0.135, -0.29], steel);
+      piece(group, [0.045, 0.045, 0.3], [0, 0.02, -0.54], gunmetal);
+      piece(group, [0.035, 0.09, 0.05], [0, 0.135, -0.29], brightSteel);
     } else {
-      part(group, [0.13, 0.17, 0.78], [0, 0, -0.24], gunmetal);
-      part(group, [0.115, 0.15, 0.35], [0, -0.025, 0.35], grip);
-      part(group, [0.1, 0.29, 0.13], [0, -0.18, 0.04], grip, [-0.14, 0, 0]);
-      part(group, [0.042, 0.042, 0.66], [0, 0.025, -0.92], steel);
-      const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.39, 12), gunmetal);
-      scope.rotation.x = Math.PI / 2;
-      scope.position.set(0, 0.17, -0.2);
-      group.add(scope);
-      const lens = new THREE.Mesh(new THREE.CircleGeometry(0.052, 16), ember);
+      // LONGSIGHT: long barrel, tall optic, kiln-fired lens.
+      piece(group, [0.13, 0.17, 0.78], [0, 0, -0.24], gunmetal);
+      piece(group, [0.115, 0.15, 0.35], [0, -0.025, 0.35], polymer);
+      piece(group, [0.1, 0.29, 0.13], [0, -0.18, 0.04], polymer, [-0.14, 0, 0]);
+      piece(group, [0.042, 0.042, 0.66], [0, 0.025, -0.92], brightSteel);
+      const optic = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.39, 12), gunmetal);
+      optic.rotation.x = Math.PI / 2;
+      optic.position.set(0, 0.17, -0.2);
+      group.add(optic);
+      const lens = new THREE.Mesh(new THREE.CircleGeometry(0.052, 16), emberGlass);
       lens.position.set(0, 0.17, -0.401);
       lens.rotation.y = Math.PI;
       group.add(lens);
-      part(group, [0.04, 0.11, 0.04], [0, 0.09, -0.11], steel);
-      part(group, [0.04, 0.11, 0.04], [0, 0.09, -0.31], steel);
+      piece(group, [0.04, 0.11, 0.04], [0, 0.09, -0.11], brightSteel);
+      piece(group, [0.04, 0.11, 0.04], [0, 0.09, -0.31], brightSteel);
     }
-    // A gloved support hand anchors the model in first person instead of leaving
-    // the impression of a floating box gun.
-    part(group, [0.12, 0.13, 0.19], [-0.09, -0.13, -0.23], glove, [0.2, 0.15, -0.3]);
+    // A gloved support hand keeps the model from floating in frame.
+    piece(group, [0.12, 0.13, 0.19], [-0.09, -0.13, -0.23], gloveMat, [0.2, 0.15, -0.3]);
     group.visible = false;
     rig.add(group);
     return group;
   }
 
   const models = WEAPONS.map((_, index) => buildModel(index));
+  models[0].visible = true;
+
   const flash = new THREE.Group();
-  const flashMaterial = new THREE.MeshBasicMaterial({
+  const flashMat = new THREE.MeshBasicMaterial({
     color: PALETTE.ember, transparent: true, opacity: 0.72, blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  for (const rotation of [0, Math.PI / 2]) {
-    const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.095, 0.21), flashMaterial);
-    plane.rotation.z = rotation;
+  for (const roll of [0, Math.PI / 2]) {
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.095, 0.21), flashMat);
+    plane.rotation.z = roll;
     flash.add(plane);
   }
   flash.position.set(0, 0.02, -0.83);
@@ -131,40 +136,8 @@ export function createWeapon(camera) {
     state.cooldown = Math.max(state.cooldown, state.drawLeft);
     state.pattern = 0;
     state.heat = Math.min(state.heat, 0.25);
-    for (let i = 0; i < models.length; i += 1) models[i].visible = i === index;
+    models.forEach((model, i) => { model.visible = i === index; });
     return true;
-  }
-
-  function unlock(index) {
-    if (state.unlocked[index]) return false;
-    state.unlocked[index] = true;
-    state.index = -1;
-    return select(index, true);
-  }
-
-  function resetMatch() {
-    state.unlocked = [true, false, false];
-    state.index = 0;
-    for (let i = 0; i < ammo.length; i += 1) {
-      ammo[i].mag = WEAPONS[i].magazine;
-      ammo[i].reserve = WEAPONS[i].reserve;
-    }
-    state.heat = 0;
-    state.cooldown = 0;
-    state.reloadLeft = 0;
-    state.drawLeft = 0;
-    for (let i = 0; i < models.length; i += 1) models[i].visible = i === 0;
-  }
-
-  function beginRound() {
-    state.cooldown = 0;
-    state.reloadLeft = 0;
-    state.heat = 0;
-    state.pattern = 0;
-    const box = ammo[state.index];
-    const needed = Math.min(current().magazine - box.mag, box.reserve);
-    box.mag += needed;
-    box.reserve -= needed;
   }
 
   function step(dt, speed) {
@@ -178,43 +151,68 @@ export function createWeapon(camera) {
     flash.rotation.z += dt * 19;
     flashLight.intensity = state.flashLeft > 0 ? 11 : 0;
 
-    const moving = Math.min(1, speed / 4.85);
-    rig.position.x = 0.31 + Math.sin(state.time * 7.5) * 0.006 * moving;
-    rig.position.y = -0.27 + Math.abs(Math.cos(state.time * 7.5)) * 0.009 * moving - state.recoil * 0.13;
+    const sway = Math.min(1, speed / 4.85);
+    rig.position.x = 0.31 + Math.sin(state.time * 7.5) * 0.006 * sway;
+    rig.position.y = -0.27 + Math.abs(Math.cos(state.time * 7.5)) * 0.009 * sway - state.recoil * 0.13;
     rig.position.z = -0.59 + state.recoil * 0.5;
     rig.rotation.x = state.recoil * 0.8;
-    rig.rotation.z = Math.sin(state.time * 3.75) * 0.005 * moving;
+    rig.rotation.z = Math.sin(state.time * 3.75) * 0.005 * sway;
     if (state.drawLeft > 0) rig.rotation.x -= state.drawLeft * 1.6;
 
     if (state.reloadLeft > 0) {
       const before = state.reloadLeft;
       state.reloadLeft = Math.max(0, before - dt);
-      const progress = 1 - state.reloadLeft / current().reload;
-      rig.rotation.z += Math.sin(progress * Math.PI) * 0.65;
-      rig.position.y -= Math.sin(progress * Math.PI) * 0.17;
+      const arc = Math.sin((1 - state.reloadLeft / current().reload) * Math.PI);
+      rig.rotation.z += arc * 0.65;
+      rig.position.y -= arc * 0.17;
       if (before > 0 && state.reloadLeft === 0) {
         const box = ammo[state.index];
-        const amount = Math.min(current().magazine - box.mag, box.reserve);
-        box.mag += amount;
-        box.reserve -= amount;
+        const pulled = Math.min(current().magazine - box.mag, box.reserve);
+        box.mag += pulled;
+        box.reserve -= pulled;
         state.pattern = 0;
       }
     }
   }
 
-  models[0].visible = true;
   return {
     state,
     ammo,
     current,
     step,
     select,
-    unlock,
-    resetMatch,
-    beginRound,
     name: () => current().name,
     automatic: () => current().automatic,
     ready: () => state.cooldown <= 0 && state.reloadLeft <= 0 && state.drawLeft <= 0 && ammo[state.index].mag > 0,
+    unlock(index) {
+      if (state.unlocked[index]) return false;
+      state.unlocked[index] = true;
+      state.index = -1;
+      return select(index, true);
+    },
+    resetMatch() {
+      state.unlocked = [true, false, false];
+      state.index = 0;
+      WEAPONS.forEach((spec, i) => {
+        ammo[i].mag = spec.magazine;
+        ammo[i].reserve = spec.reserve;
+      });
+      state.heat = 0;
+      state.cooldown = 0;
+      state.reloadLeft = 0;
+      state.drawLeft = 0;
+      models.forEach((model, i) => { model.visible = i === 0; });
+    },
+    beginRound() {
+      state.cooldown = 0;
+      state.reloadLeft = 0;
+      state.heat = 0;
+      state.pattern = 0;
+      const box = ammo[state.index];
+      const topped = Math.min(current().magazine - box.mag, box.reserve);
+      box.mag += topped;
+      box.reserve -= topped;
+    },
     fire(rng) {
       if (ammo[state.index].mag <= 0) return null;
       ammo[state.index].mag -= 1;
@@ -223,9 +221,9 @@ export function createWeapon(camera) {
       state.recoil = 0.12;
       state.heat = Math.min(1.35, state.heat + (state.index === 1 ? 0.12 : 0.2));
       const pattern = current().pattern;
-      const kick = pattern[Math.min(state.pattern, pattern.length - 1)];
+      const impulse = pattern[Math.min(state.pattern, pattern.length - 1)];
       state.pattern += 1;
-      return [kick[0] * (0.92 + rng() * 0.16), kick[1] * (0.9 + rng() * 0.2)];
+      return [impulse[0] * (0.92 + rng() * 0.16), impulse[1] * (0.9 + rng() * 0.2)];
     },
     reload() {
       const box = ammo[state.index];
@@ -236,19 +234,19 @@ export function createWeapon(camera) {
     },
     spread(speed, scoped) {
       const spec = current();
-      const base = scoped && state.index === 2 ? 0.00012 : spec.spread;
-      return base + Math.min(1, speed / 4.85) * spec.moveSpread + state.heat * spec.heatSpread;
+      const rest = scoped && state.index === 2 ? 0.00012 : spec.spread;
+      return rest + Math.min(1, speed / 4.85) * spec.moveSpread + state.heat * spec.heatSpread;
     },
     refillAmmo() {
-      for (let i = 0; i < ammo.length; i += 1) {
-        if (!state.unlocked[i]) continue;
-        ammo[i].mag = WEAPONS[i].magazine;
-        ammo[i].reserve = WEAPONS[i].reserve;
-      }
+      WEAPONS.forEach((spec, i) => {
+        if (!state.unlocked[i]) return;
+        ammo[i].mag = spec.magazine;
+        ammo[i].reserve = spec.reserve;
+      });
     },
     ammoFull() {
-      return ammo.every((box, index) => !state.unlocked[index]
-        || (box.mag === WEAPONS[index].magazine && box.reserve === WEAPONS[index].reserve));
+      return WEAPONS.every((spec, i) => !state.unlocked[i]
+        || (ammo[i].mag === spec.magazine && ammo[i].reserve === spec.reserve));
     },
     setVisible(visible) {
       rig.visible = visible;

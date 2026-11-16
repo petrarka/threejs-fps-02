@@ -1,5 +1,5 @@
-// Optional clay calibration marks along the north wall. They use real head/body
-// hit meshes too, providing a quiet aim reference without becoming a round objective.
+// Clay calibration marks along the north wall: optional aim references with
+// real head/body hit meshes. They are never a round objective.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
@@ -38,7 +38,7 @@ export function createTargets(scene) {
     hitMeshes,
     damage(mesh, amount) {
       const item = mesh.userData.owner;
-      if (!item.alive) return { killed: false, damage: 0, item };
+      if (!item || !item.alive) return { killed: false, damage: 0, item };
       const dealt = Math.min(item.health, amount);
       item.health -= dealt;
       if (item.health <= 0) {

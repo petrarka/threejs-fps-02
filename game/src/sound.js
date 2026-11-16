@@ -1,78 +1,78 @@
-// A compact WebAudio instrument rack. No files, fetches or decoded assets: every
-// report, impact, fuse and interface cue is synthesized after the first gesture.
-let audio = null;
+// A small WebAudio instrument rack. No files, fetches or decoded assets: every
+// report, impact, fuse tick and interface cue is synthesized on the fly after
+// the first user gesture unlocks the context.
+let ctx = null;
 let bus = null;
-let noiseBuffer = null;
+let noiseBuf = null;
+let noiseCursor = 0;
 let muted = false;
-let noiseOffset = 0;
-let masterLevel = 0.32;
+const MASTER = 0.32;
 
-function ensureContext() {
-  if (audio) return audio;
-  const Context = window.AudioContext || window.webkitAudioContext;
-  if (!Context) return null;
-  audio = new Context();
-  bus = audio.createGain();
-  bus.gain.value = muted ? 0 : masterLevel;
-  const compressor = audio.createDynamicsCompressor();
-  compressor.threshold.value = -16;
-  compressor.ratio.value = 7;
-  bus.connect(compressor);
-  compressor.connect(audio.destination);
+function ensure() {
+  if (ctx) return ctx;
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  if (!Ctor) return null;
+  ctx = new Ctor();
+  bus = ctx.createGain();
+  bus.gain.value = muted ? 0 : MASTER;
+  const limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -16;
+  limiter.ratio.value = 7;
+  bus.connect(limiter);
+  limiter.connect(ctx.destination);
 
-  const length = audio.sampleRate;
-  noiseBuffer = audio.createBuffer(1, length, audio.sampleRate);
-  const data = noiseBuffer.getChannelData(0);
-  let seed = 0x41c6ce57;
-  for (let i = 0; i < length; i += 1) {
-    seed ^= seed << 13;
-    seed ^= seed >>> 17;
-    seed ^= seed << 5;
-    data[i] = ((seed >>> 0) / 2147483648) - 1;
+  noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+  const data = noiseBuf.getChannelData(0);
+  let state = 0x41c6ce57;
+  for (let i = 0; i < data.length; i += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    data[i] = ((state >>> 0) / 2147483648) - 1;
   }
-  return audio;
+  return ctx;
 }
 
 function unlock() {
-  const context = ensureContext();
-  if (context && context.state === 'suspended') context.resume().catch(() => {});
+  const audio = ensure();
+  if (audio && audio.state === 'suspended') audio.resume().catch(() => {});
 }
 window.addEventListener('pointerdown', unlock, { passive: true });
 window.addEventListener('keydown', unlock, { passive: true });
 
-function tone(frequency, duration, options = {}) {
-  if (!audio || audio.state !== 'running') return;
-  const at = audio.currentTime + (options.delay || 0);
-  const oscillator = audio.createOscillator();
-  const gain = audio.createGain();
-  oscillator.type = options.type || 'sine';
-  oscillator.frequency.setValueAtTime(Math.max(20, frequency), at);
-  if (options.to) oscillator.frequency.exponentialRampToValueAtTime(Math.max(20, options.to), at + duration);
-  gain.gain.setValueAtTime(options.gain || 0.12, at);
+function tone(freq, duration, opts = {}) {
+  if (!ctx || ctx.state !== 'running') return;
+  const at = ctx.currentTime + (opts.delay || 0);
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = opts.type || 'sine';
+  osc.frequency.setValueAtTime(Math.max(20, freq), at);
+  if (opts.to) osc.frequency.exponentialRampToValueAtTime(Math.max(20, opts.to), at + duration);
+  gain.gain.setValueAtTime(opts.gain || 0.12, at);
   gain.gain.exponentialRampToValueAtTime(0.0008, at + duration);
-  oscillator.connect(gain);
+  osc.connect(gain);
   gain.connect(bus);
-  oscillator.start(at);
-  oscillator.stop(at + duration + 0.02);
+  osc.start(at);
+  osc.stop(at + duration + 0.02);
 }
 
-function noise(duration, options = {}) {
-  if (!audio || audio.state !== 'running' || !noiseBuffer) return;
-  const at = audio.currentTime + (options.delay || 0);
-  const source = audio.createBufferSource();
-  source.buffer = noiseBuffer;
-  const filter = audio.createBiquadFilter();
-  filter.type = options.filter || 'lowpass';
-  filter.frequency.setValueAtTime(options.cutoff || 1500, at);
-  if (options.to) filter.frequency.exponentialRampToValueAtTime(options.to, at + duration);
-  const gain = audio.createGain();
-  gain.gain.setValueAtTime(options.gain || 0.2, at);
+function noise(duration, opts = {}) {
+  if (!ctx || ctx.state !== 'running' || !noiseBuf) return;
+  const at = ctx.currentTime + (opts.delay || 0);
+  const src = ctx.createBufferSource();
+  src.buffer = noiseBuf;
+  const filter = ctx.createBiquadFilter();
+  filter.type = opts.filter || 'lowpass';
+  filter.frequency.setValueAtTime(opts.cutoff || 1500, at);
+  if (opts.to) filter.frequency.exponentialRampToValueAtTime(opts.to, at + duration);
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(opts.gain || 0.2, at);
   gain.gain.exponentialRampToValueAtTime(0.0008, at + duration);
-  source.connect(filter);
+  src.connect(filter);
   filter.connect(gain);
   gain.connect(bus);
-  source.start(at, (noiseOffset++ % 17) * 0.031);
-  source.stop(at + duration + 0.01);
+  src.start(at, (noiseCursor++ % 17) * 0.031);
+  src.stop(at + duration + 0.01);
 }
 
 export const sound = {
@@ -121,11 +121,11 @@ export const sound = {
     tone(urgent ? 1450 : 1080, 0.045, { type: 'square', gain: 0.055 });
   },
   defused() {
-    [740, 590, 440].forEach((frequency, i) => tone(frequency, 0.15, { type: 'triangle', gain: 0.08, delay: i * 0.1 }));
+    [740, 590, 440].forEach((freq, i) => tone(freq, 0.15, { type: 'triangle', gain: 0.08, delay: i * 0.1 }));
   },
   round(won) {
     const notes = won ? [392, 523, 659, 784] : [392, 330, 262];
-    notes.forEach((frequency, i) => tone(frequency, 0.18, { type: 'triangle', gain: 0.08, delay: i * 0.105 }));
+    notes.forEach((freq, i) => tone(freq, 0.18, { type: 'triangle', gain: 0.08, delay: i * 0.105 }));
   },
   purchase(ok = true) {
     tone(ok ? 920 : 150, 0.055, { type: 'square', gain: 0.06 });
@@ -133,7 +133,7 @@ export const sound = {
   },
   toggleMute() {
     muted = !muted;
-    if (bus) bus.gain.setTargetAtTime(muted ? 0 : masterLevel, audio.currentTime, 0.015);
+    if (bus) bus.gain.setTargetAtTime(muted ? 0 : MASTER, ctx.currentTime, 0.015);
     return muted;
   },
 };

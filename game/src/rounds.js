@@ -1,5 +1,6 @@
-// Match state machine. World mutation and presentation deliberately live elsewhere.
-import { ROUNDS_TO_WIN } from './config.js';
+// Match state machine: buy phase, live round, intermission, match over.
+// It owns clocks and scores only — world mutation and presentation live elsewhere.
+import { ROUNDS_FOR_MATCH } from './config.js';
 
 export const BUY_SECONDS = 7;
 export const ROUND_SECONDS = 115;
@@ -29,7 +30,7 @@ export function createRounds() {
     if (crewWon) state.crew += 1;
     else state.guards += 1;
     state.lastResult = reason;
-    if (state.crew >= ROUNDS_TO_WIN || state.guards >= ROUNDS_TO_WIN) {
+    if (state.crew >= ROUNDS_FOR_MATCH || state.guards >= ROUNDS_FOR_MATCH) {
       state.phase = 'match';
       state.clock = 0;
       return 'match';
@@ -39,10 +40,10 @@ export function createRounds() {
     return 'round';
   }
 
-  // A return value describes exactly one boundary crossed on this fixed step.
+  // Returns the single boundary crossed on this fixed step, if any.
   function tick(dt, chargeActive) {
     if (!['buy', 'live', 'over'].includes(state.phase)) return null;
-    // A planted Ember owns the endgame even after the ordinary round clock expires.
+    // A planted Ember owns the endgame even after the round clock expires.
     if (state.phase === 'live' && chargeActive) return null;
     state.clock = Math.max(0, state.clock - dt);
     if (state.clock > 0) return null;

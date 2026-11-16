@@ -1,12 +1,12 @@
-// DOM presentation layer. The HUD receives snapshots and events; it never makes
-// combat or economy decisions. Expensive board rows are rebuilt only when stats change.
-import { formatClock, GUARD_NAMES } from './config.js';
+// DOM presentation layer. The HUD renders snapshots and events; it never makes
+// combat or economy decisions. Expensive roster rows rebuild only on change.
+import { clockText, GUARD_NAMES } from './config.js';
 
 const $ = (id) => document.getElementById(id);
-const ROLE = { entry: 'ENTRY', planter: 'PLANTER', anchor: 'ANCHOR' };
+const ROLE_LABEL = { entry: 'ENTRY', planter: 'PLANTER', anchor: 'ANCHOR' };
 
 export function createHud() {
-  const nodes = {
+  const el = {
     crewScore: $('crew-score'), guardScore: $('guard-score'), round: $('round-label'), clock: $('clock'),
     phase: $('phase'), objective: $('objective'), crew: $('crew-strip'), alive: $('alive-count'),
     hp: $('hp'), armor: $('armor'), equipment: $('equipment'), money: $('money-value'),
@@ -22,19 +22,19 @@ export function createHud() {
   };
   const shopRows = Array.from(document.querySelectorAll('.shop-row'));
   let hitLeft = 0;
-  let damageLeft = 0;
+  let hurtLeft = 0;
   let toastLeft = 0;
   let boardKey = '';
   let crewBuilt = false;
 
-  function buildCrew(items) {
-    nodes.crew.textContent = '';
-    for (const mate of items) {
+  function buildCrewStrip(mates) {
+    el.crew.textContent = '';
+    for (const mate of mates) {
       const card = document.createElement('div');
       card.className = 'mate-card';
       card.dataset.mate = mate.name;
-      card.innerHTML = `<i class="mate-pip"></i><div><div class="mate-name">${mate.name}</div><div class="mate-role">${ROLE[mate.role]}</div></div><span class="mate-hp">100</span>`;
-      nodes.crew.appendChild(card);
+      card.innerHTML = `<i class="mate-pip"></i><div><div class="mate-name">${mate.name}</div><div class="mate-role">${ROLE_LABEL[mate.role]}</div></div><span class="mate-hp">100</span>`;
+      el.crew.appendChild(card);
     }
     crewBuilt = true;
   }
@@ -42,16 +42,15 @@ export function createHud() {
   function boardRow(person, team, alive) {
     const row = document.createElement('tr');
     row.className = `${team}${alive ? '' : ' down'}`;
-    const values = [person.name, person.kills, person.deaths, Math.round(person.dmg), alive ? 'UP' : 'DOWN'];
-    values.forEach((value) => {
+    for (const value of [person.name, person.kills, person.deaths, Math.round(person.dmg), alive ? 'UP' : 'DOWN']) {
       const cell = document.createElement('td');
       cell.textContent = String(value);
       row.appendChild(cell);
-    });
+    }
     return row;
   }
 
-  function divider(label) {
+  function boardDivider(label) {
     const row = document.createElement('tr');
     row.className = 'team-divider';
     const cell = document.createElement('td');
@@ -62,138 +61,139 @@ export function createHud() {
   }
 
   return {
-    onPlay(handler) { nodes.play.addEventListener('click', handler); },
+    onPlay(handler) { el.play.addEventListener('click', handler); },
 
     setRound(rounds, clock, phaseText) {
-      nodes.crewScore.textContent = rounds.crew;
-      nodes.guardScore.textContent = rounds.guards;
-      nodes.round.textContent = `ROUND ${String(rounds.number).padStart(2, '0')} · FIRST TO 8`;
-      nodes.clock.textContent = formatClock(clock);
-      nodes.clock.classList.toggle('urgent', rounds.phase === 'live' && clock <= 20 && clock > 0);
-      nodes.phase.hidden = !phaseText;
-      if (phaseText) nodes.phase.textContent = phaseText;
+      el.crewScore.textContent = rounds.crew;
+      el.guardScore.textContent = rounds.guards;
+      el.round.textContent = `ROUND ${String(rounds.number).padStart(2, '0')} · FIRST TO 8`;
+      el.clock.textContent = clockText(clock);
+      el.clock.classList.toggle('urgent', rounds.phase === 'live' && clock <= 20 && clock > 0);
+      el.phase.hidden = !phaseText;
+      if (phaseText) el.phase.textContent = phaseText;
     },
 
     setBomb(text) {
-      nodes.objective.hidden = !text;
-      if (text) nodes.objective.textContent = text;
+      el.objective.hidden = !text;
+      if (text) el.objective.textContent = text;
     },
 
     setCrew(mates, guardsAlive) {
-      if (!crewBuilt) buildCrew(mates);
+      if (!crewBuilt) buildCrewStrip(mates);
       for (const mate of mates) {
-        const card = nodes.crew.querySelector(`[data-mate="${mate.name}"]`);
+        const card = el.crew.querySelector(`[data-mate="${mate.name}"]`);
         if (!card) continue;
         card.classList.toggle('dead', !mate.alive);
         card.querySelector('.mate-hp').textContent = mate.alive ? Math.max(0, Math.ceil(mate.health)) : 'KIA';
       }
-      nodes.alive.textContent = `${1 + mates.filter((mate) => mate.alive).length} × ${guardsAlive}`;
+      el.alive.textContent = `${1 + mates.filter((mate) => mate.alive).length} × ${guardsAlive}`;
     },
 
     setVitals(hp, economy) {
-      nodes.hp.textContent = Math.max(0, Math.ceil(hp));
-      nodes.hp.classList.toggle('hurt', hp <= 35);
-      nodes.lowHealth.style.opacity = hp > 0 && hp <= 35 ? String((35 - hp) / 55) : '0';
-      nodes.armor.textContent = economy.armor > 0 ? `VEST ${Math.ceil(economy.armor)}` : 'NO VEST';
-      nodes.equipment.textContent = `VEST ${economy.armor > 0 ? 'ON' : '—'} · HELM ${economy.helmet ? 'ON' : '—'}`;
-      nodes.money.textContent = `$${economy.money}`;
+      el.hp.textContent = Math.max(0, Math.ceil(hp));
+      el.hp.classList.toggle('hurt', hp <= 35);
+      el.lowHealth.style.opacity = hp > 0 && hp <= 35 ? String((35 - hp) / 55) : '0';
+      el.armor.textContent = economy.armor > 0 ? `VEST ${Math.ceil(economy.armor)}` : 'NO VEST';
+      el.equipment.textContent = `VEST ${economy.armor > 0 ? 'ON' : '—'} · HELM ${economy.helmet ? 'ON' : '—'}`;
+      el.money.textContent = `$${economy.money}`;
     },
 
     setWeapon(weapon, grenadeCount) {
       const spec = weapon.current();
-      const ammo = weapon.ammo[weapon.state.index];
-      nodes.weapon.textContent = spec.name;
-      nodes.weaponClass.textContent = weapon.state.reloadLeft > 0 ? `RELOADING · ${weapon.state.reloadLeft.toFixed(1)}S` : spec.className;
-      nodes.mag.textContent = ammo.mag;
-      nodes.mag.classList.toggle('empty', ammo.mag === 0);
-      nodes.reserve.textContent = `/ ${ammo.reserve}`;
-      nodes.inventory.textContent = `FIREPOT ×${grenadeCount} · ${spec.automatic ? 'AUTO' : 'SEMI'}`;
-      nodes.heat.style.width = `${Math.min(100, weapon.state.heat / 1.35 * 100)}%`;
+      const box = weapon.ammo[weapon.state.index];
+      el.weapon.textContent = spec.name;
+      el.weaponClass.textContent = weapon.state.reloadLeft > 0
+        ? `RELOADING · ${weapon.state.reloadLeft.toFixed(1)}S`
+        : spec.className;
+      el.mag.textContent = box.mag;
+      el.mag.classList.toggle('empty', box.mag === 0);
+      el.reserve.textContent = `/ ${box.reserve}`;
+      el.inventory.textContent = `FIREPOT ×${grenadeCount} · ${spec.automatic ? 'AUTO' : 'SEMI'}`;
+      el.heat.style.width = `${Math.min(100, weapon.state.heat / 1.35 * 100)}%`;
     },
 
     setUse(label, progress, subtext = 'HOLD POSITION') {
-      nodes.interact.hidden = !label || progress <= 0;
+      el.interact.hidden = !label || progress <= 0;
       if (!label || progress <= 0) return;
-      nodes.useLabel.textContent = label;
-      nodes.useSub.textContent = subtext;
-      nodes.useFill.style.width = `${Math.round(Math.min(1, progress) * 100)}%`;
+      el.useLabel.textContent = label;
+      el.useSub.textContent = subtext;
+      el.useFill.style.width = `${Math.round(Math.min(1, progress) * 100)}%`;
     },
 
     hit(killed, persistent = false) {
       hitLeft = persistent ? 999 : 0.16;
-      nodes.hitmarker.classList.add('on');
-      nodes.hitmarker.classList.toggle('kill', killed);
+      el.hitmarker.classList.add('on');
+      el.hitmarker.classList.toggle('kill', killed);
     },
 
-    hurt() { damageLeft = 0.32; },
+    hurt() { hurtLeft = 0.32; },
 
     notify(text, persistent = false) {
       toastLeft = persistent ? 999 : 1.8;
-      nodes.toast.textContent = text;
-      nodes.toast.classList.add('on');
+      el.toast.textContent = text;
+      el.toast.classList.add('on');
     },
 
     kill(killer, victim, headshot = false) {
       const row = document.createElement('div');
       row.className = 'feed-row';
-      const killerClass = GUARD_NAMES.includes(killer) ? 'guard' : 'crew';
-      const victimClass = GUARD_NAMES.includes(victim) ? 'guard' : 'crew';
-      row.innerHTML = `<span class="${killerClass}">${killer}</span><span class="hs">${headshot ? 'HEADSHOT' : '›'}</span><span class="${victimClass}">${victim}</span>`;
-      nodes.feed.prepend(row);
-      while (nodes.feed.childElementCount > 5) nodes.feed.lastElementChild.remove();
+      const killerTeam = GUARD_NAMES.includes(killer) ? 'guard' : 'crew';
+      const victimTeam = GUARD_NAMES.includes(victim) ? 'guard' : 'crew';
+      row.innerHTML = `<span class="${killerTeam}">${killer}</span><span class="hs">${headshot ? 'HEADSHOT' : '›'}</span><span class="${victimTeam}">${victim}</span>`;
+      el.feed.prepend(row);
+      while (el.feed.childElementCount > 5) el.feed.lastElementChild.remove();
     },
 
-    clearFeed() { nodes.feed.textContent = ''; },
+    clearFeed() { el.feed.textContent = ''; },
 
     showBoard(data) {
       const key = [
         data.rounds.number, data.rounds.crew, data.rounds.guards, data.status,
         data.player.kills, data.player.deaths, Math.round(data.player.dmg), data.playerAlive,
-        ...data.mates.flatMap((mate) => [mate.kills, mate.deaths, Math.round(mate.dmg), mate.alive]),
-        ...data.guards.flatMap((guard) => [guard.kills, guard.deaths, Math.round(guard.dmg), guard.alive]),
+        ...data.mates.flatMap((m) => [m.kills, m.deaths, Math.round(m.dmg), m.alive]),
+        ...data.guards.flatMap((g) => [g.kills, g.deaths, Math.round(g.dmg), g.alive]),
       ].join('|');
-      nodes.board.hidden = false;
-      nodes.boardScore.textContent = `${data.rounds.crew} — ${data.rounds.guards}`;
-      nodes.boardSubtitle.textContent = `ROUND ${String(data.rounds.number).padStart(2, '0')} · K / D / DAMAGE`;
-      nodes.boardStatus.textContent = data.status || 'HOLD TAB TO REVIEW · FIRST TO EIGHT ROUNDS';
+      el.board.hidden = false;
+      el.boardScore.textContent = `${data.rounds.crew} — ${data.rounds.guards}`;
+      el.boardSubtitle.textContent = `ROUND ${String(data.rounds.number).padStart(2, '0')} · K / D / DAMAGE`;
+      el.boardStatus.textContent = data.status || 'HOLD TAB TO REVIEW · FIRST TO EIGHT ROUNDS';
       if (key === boardKey) return;
       boardKey = key;
-      nodes.boardBody.textContent = '';
-      nodes.boardBody.appendChild(divider('EMBER CREW / ATTACKERS'));
-      nodes.boardBody.appendChild(boardRow(data.player, 'crew', data.playerAlive));
-      for (const mate of data.mates) nodes.boardBody.appendChild(boardRow(mate, 'crew', mate.alive));
-      nodes.boardBody.appendChild(divider('YARD GUARD / DEFENDERS'));
-      for (const guard of data.guards) nodes.boardBody.appendChild(boardRow(guard, 'guard', guard.alive));
+      el.boardBody.textContent = '';
+      el.boardBody.appendChild(boardDivider('EMBER CREW / ATTACKERS'));
+      el.boardBody.appendChild(boardRow(data.player, 'crew', data.playerAlive));
+      for (const mate of data.mates) el.boardBody.appendChild(boardRow(mate, 'crew', mate.alive));
+      el.boardBody.appendChild(boardDivider('YARD GUARD / DEFENDERS'));
+      for (const guard of data.guards) el.boardBody.appendChild(boardRow(guard, 'guard', guard.alive));
     },
-    hideBoard() { nodes.board.hidden = true; },
+    hideBoard() { el.board.hidden = true; },
 
     showShop(economy, hp, weapon, roundNumber) {
-      nodes.shop.hidden = false;
-      nodes.shopMoney.textContent = `$${economy.money}`;
-      nodes.shopRound.textContent = String(roundNumber).padStart(2, '0');
+      el.shop.hidden = false;
+      el.shopMoney.textContent = `$${economy.money}`;
+      el.shopRound.textContent = String(roundNumber).padStart(2, '0');
+      const PRICES = { vest: 650, helm: 400, ammo: 300, he: 400, stim: 500, coil: 650, longsight: 1350 };
       for (const row of shopRows) {
         const key = row.dataset.item;
-        const price = key === 'coil' ? 650 : key === 'longsight' ? 1350
-          : key === 'vest' ? 650 : key === 'helm' ? 400 : key === 'ammo' ? 300 : key === 'he' ? 400 : 500;
         let owned = false;
         let stock = '';
         if (key === 'vest') { owned = economy.armor >= 100; stock = owned ? 'WORN' : `${Math.ceil(economy.armor)} INTEGRITY`; }
-        if (key === 'helm') { owned = economy.helmet; stock = owned ? 'WORN' : 'IN STOCK'; }
-        if (key === 'he') { stock = `${weapon.grenades} / 2 CARRIED`; owned = weapon.grenades >= 2; }
-        if (key === 'stim') { stock = `${Math.ceil(hp)} HP`; owned = hp >= 100; }
-        if (key === 'ammo') stock = 'OWNED WEAPONS';
-        if (key === 'coil') { owned = weapon.unlocked[1]; stock = owned ? 'ISSUED' : 'ON RACK'; }
-        if (key === 'longsight') { owned = weapon.unlocked[2]; stock = owned ? 'ISSUED' : 'ON RACK'; }
+        else if (key === 'helm') { owned = economy.helmet; stock = owned ? 'WORN' : 'IN STOCK'; }
+        else if (key === 'he') { stock = `${weapon.grenades} / 2 CARRIED`; owned = weapon.grenades >= 2; }
+        else if (key === 'stim') { stock = `${Math.ceil(hp)} HP`; owned = hp >= 100; }
+        else if (key === 'ammo') stock = 'OWNED WEAPONS';
+        else if (key === 'coil') { owned = weapon.unlocked[1]; stock = owned ? 'ISSUED' : 'ON RACK'; }
+        else if (key === 'longsight') { owned = weapon.unlocked[2]; stock = owned ? 'ISSUED' : 'ON RACK'; }
         row.classList.toggle('owned', owned);
-        row.classList.toggle('poor', economy.money < price && !owned);
+        row.classList.toggle('poor', economy.money < PRICES[key] && !owned);
         row.querySelector('.stock').textContent = stock;
       }
     },
-    hideShop() { nodes.shop.hidden = true; },
+    hideShop() { el.shop.hidden = true; },
 
     scope(active) {
-      nodes.scope.classList.toggle('on', active);
-      nodes.crosshair.style.opacity = active ? '0' : '1';
+      el.scope.classList.toggle('on', active);
+      el.crosshair.style.opacity = active ? '0' : '1';
     },
 
     showOverlay(mode, data = {}) {
@@ -204,29 +204,29 @@ export function createHud() {
         defeat: ['OPERATION COMPLETE / GUARD VICTORY', 'YARD <span>LOST</span>', `The defense held the kilns. Final score ${data.crew ?? 0}—${data.guards ?? 8}. Re-arm, use your crew and make every angle count.`, 'TRY AGAIN'],
       }[mode] || null;
       if (!content) return;
-      nodes.overlayKicker.textContent = content[0];
-      nodes.overlayTitle.innerHTML = content[1];
-      nodes.overlayCopy.textContent = content[2];
-      nodes.play.textContent = content[3];
-      nodes.overlayNote.textContent = mode === 'start' ? 'CLICK TO CAPTURE MOUSE' : 'DESKTOP / MOUSE + KEYBOARD';
-      nodes.briefing.hidden = mode !== 'start';
-      nodes.overlay.hidden = false;
-      if (mode !== 'start') nodes.play.focus();
+      el.overlayKicker.textContent = content[0];
+      el.overlayTitle.innerHTML = content[1];
+      el.overlayCopy.textContent = content[2];
+      el.play.textContent = content[3];
+      el.overlayNote.textContent = mode === 'start' ? 'CLICK TO CAPTURE MOUSE' : 'DESKTOP / MOUSE + KEYBOARD';
+      el.briefing.hidden = mode !== 'start';
+      el.overlay.hidden = false;
+      if (mode !== 'start') el.play.focus();
     },
-    hideOverlay() { nodes.overlay.hidden = true; },
+    hideOverlay() { el.overlay.hidden = true; },
 
     step(dt) {
       if (hitLeft > 0) {
         hitLeft -= dt;
-        if (hitLeft <= 0) nodes.hitmarker.classList.remove('on');
+        if (hitLeft <= 0) el.hitmarker.classList.remove('on');
       }
-      if (damageLeft > 0) {
-        damageLeft -= dt;
-        nodes.damage.style.opacity = String(Math.max(0, damageLeft / 0.32) * 0.72);
-      } else nodes.damage.style.opacity = '0';
+      if (hurtLeft > 0) {
+        hurtLeft -= dt;
+        el.damage.style.opacity = String(Math.max(0, hurtLeft / 0.32) * 0.72);
+      } else el.damage.style.opacity = '0';
       if (toastLeft > 0) {
         toastLeft -= dt;
-        if (toastLeft <= 0) nodes.toast.classList.remove('on');
+        if (toastLeft <= 0) el.toast.classList.remove('on');
       }
     },
   };

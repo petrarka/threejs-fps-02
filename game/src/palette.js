@@ -1,4 +1,5 @@
-// Emberline's entire colour language: hot clay against blue-black steel.
+// The whole colour voice of Emberline: fired clay and ember light over
+// blue-black night steel. HUD CSS mirrors these values in index.html.
 export const PALETTE = Object.freeze({
   night: '#10141b',
   dusk: '#252936',
@@ -16,6 +17,6 @@ export const PALETTE = Object.freeze({
   danger: '#ee5f46',
 });
 
-export function color(name) {
+export function swatch(name) {
   return PALETTE[name] || name;
 }
