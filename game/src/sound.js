@@ -1,147 +1,139 @@
-// sound.js — WebAudio synth cues. The context is lazy: no AudioContext exists until the
-// first real user gesture, so headless shot renders and the pre-lock screen stay silent and
-// never throw. Everything degrades to a no-op where audio is unavailable. The noise buffer
-// is filled by a fixed-seed generator, so the build stays fully deterministic.
-
-let ctx = null;
-let master = null;
-let unlocked = false;
+// A compact WebAudio instrument rack. No files, fetches or decoded assets: every
+// report, impact, fuse and interface cue is synthesized after the first gesture.
+let audio = null;
+let bus = null;
+let noiseBuffer = null;
 let muted = false;
+let noiseOffset = 0;
+let masterLevel = 0.32;
 
-function ensure() {
-  if (ctx) return ctx;
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return null;
-  ctx = new AC();
-  master = ctx.createGain();
-  master.gain.value = 0.35;
-  master.connect(ctx.destination);
-  return ctx;
+function ensureContext() {
+  if (audio) return audio;
+  const Context = window.AudioContext || window.webkitAudioContext;
+  if (!Context) return null;
+  audio = new Context();
+  bus = audio.createGain();
+  bus.gain.value = muted ? 0 : masterLevel;
+  const compressor = audio.createDynamicsCompressor();
+  compressor.threshold.value = -16;
+  compressor.ratio.value = 7;
+  bus.connect(compressor);
+  compressor.connect(audio.destination);
+
+  const length = audio.sampleRate;
+  noiseBuffer = audio.createBuffer(1, length, audio.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  let seed = 0x41c6ce57;
+  for (let i = 0; i < length; i += 1) {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    data[i] = ((seed >>> 0) / 2147483648) - 1;
+  }
+  return audio;
 }
 
-// Browsers gate an AudioContext behind a gesture; arm it on the first one.
 function unlock() {
-  if (unlocked) return;
-  const c = ensure();
-  if (!c) return;
-  if (c.state === 'suspended') c.resume().catch(() => {});
-  unlocked = true;
+  const context = ensureContext();
+  if (context && context.state === 'suspended') context.resume().catch(() => {});
 }
 window.addEventListener('pointerdown', unlock, { passive: true });
 window.addEventListener('keydown', unlock, { passive: true });
 
-function tone(freq, dur, type, gain, slideTo) {
-  const c = ensure();
-  if (!c || c.state !== 'running') return;
-  const t0 = c.currentTime;
-  const osc = c.createOscillator();
-  const g = c.createGain();
-  osc.type = type || 'sine';
-  osc.frequency.setValueAtTime(freq, t0);
-  if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, t0 + dur);
-  g.gain.setValueAtTime(gain || 0.2, t0);
-  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
-  osc.connect(g);
-  g.connect(master);
-  osc.start(t0);
-  osc.stop(t0 + dur + 0.02);
+function tone(frequency, duration, options = {}) {
+  if (!audio || audio.state !== 'running') return;
+  const at = audio.currentTime + (options.delay || 0);
+  const oscillator = audio.createOscillator();
+  const gain = audio.createGain();
+  oscillator.type = options.type || 'sine';
+  oscillator.frequency.setValueAtTime(Math.max(20, frequency), at);
+  if (options.to) oscillator.frequency.exponentialRampToValueAtTime(Math.max(20, options.to), at + duration);
+  gain.gain.setValueAtTime(options.gain || 0.12, at);
+  gain.gain.exponentialRampToValueAtTime(0.0008, at + duration);
+  oscillator.connect(gain);
+  gain.connect(bus);
+  oscillator.start(at);
+  oscillator.stop(at + duration + 0.02);
 }
 
-// Deterministic white-noise-ish sample in [-1, 1], from a fixed-seed xorshift.
-let noiseState = 0x9e3779b9;
-function noiseSample() {
-  noiseState ^= noiseState << 13;
-  noiseState ^= noiseState >>> 17;
-  noiseState ^= noiseState << 5;
-  return ((noiseState >>> 0) / 4294967296) * 2 - 1;
+function noise(duration, options = {}) {
+  if (!audio || audio.state !== 'running' || !noiseBuffer) return;
+  const at = audio.currentTime + (options.delay || 0);
+  const source = audio.createBufferSource();
+  source.buffer = noiseBuffer;
+  const filter = audio.createBiquadFilter();
+  filter.type = options.filter || 'lowpass';
+  filter.frequency.setValueAtTime(options.cutoff || 1500, at);
+  if (options.to) filter.frequency.exponentialRampToValueAtTime(options.to, at + duration);
+  const gain = audio.createGain();
+  gain.gain.setValueAtTime(options.gain || 0.2, at);
+  gain.gain.exponentialRampToValueAtTime(0.0008, at + duration);
+  source.connect(filter);
+  filter.connect(gain);
+  gain.connect(bus);
+  source.start(at, (noiseOffset++ % 17) * 0.031);
+  source.stop(at + duration + 0.01);
 }
 
-function noise(dur, gain, cutoff) {
-  const c = ensure();
-  if (!c || c.state !== 'running') return;
-  const t0 = c.currentTime;
-  const len = Math.max(1, Math.floor(c.sampleRate * dur));
-  const buf = c.createBuffer(1, len, c.sampleRate);
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < len; i += 1) data[i] = noiseSample() * (1 - i / len);
-  const src = c.createBufferSource();
-  src.buffer = buf;
-  const filt = c.createBiquadFilter();
-  filt.type = 'lowpass';
-  filt.frequency.value = cutoff || 1800;
-  const g = c.createGain();
-  g.gain.setValueAtTime(gain || 0.3, t0);
-  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
-  src.connect(filt);
-  filt.connect(g);
-  g.connect(master);
-  src.start(t0);
-}
-
-export function shoot() {
-  noise(0.09, 0.28, 2400);
-  tone(220, 0.08, 'square', 0.10, 90);
-}
-
-export function hit(killed) {
-  if (killed) {
-    tone(660, 0.06, 'square', 0.14);
-    tone(880, 0.09, 'square', 0.12);
-  } else {
-    tone(520, 0.05, 'square', 0.10);
-  }
-}
-
-export function hurt() {
-  tone(160, 0.14, 'sawtooth', 0.16, 90);
-}
-
-export function explosion() {
-  noise(0.7, 0.5, 320);
-  tone(70, 0.6, 'sine', 0.35, 38);
-}
-
-export function tick() {
-  tone(1200, 0.04, 'square', 0.07);
-}
-
-export function armed() {
-  tone(440, 0.08, 'square', 0.12);
-  tone(660, 0.12, 'square', 0.12);
-}
-
-export function defused() {
-  tone(880, 0.08, 'sine', 0.14);
-  tone(660, 0.10, 'sine', 0.12);
-  tone(440, 0.16, 'sine', 0.12);
-}
-
-export function step() {
-  noise(0.05, 0.08, 700);
-}
-
-export function roundEnd(won) {
-  if (won) {
-    tone(523, 0.10, 'square', 0.12);
-    setTimeout(() => tone(659, 0.10, 'square', 0.12), 110);
-    setTimeout(() => tone(784, 0.18, 'square', 0.12), 220);
-  } else {
-    tone(392, 0.14, 'square', 0.12);
-    setTimeout(() => tone(311, 0.24, 'square', 0.12), 150);
-  }
-}
-
-export function buy() {
-  tone(980, 0.04, 'square', 0.10);
-  setTimeout(() => tone(1320, 0.06, 'square', 0.08), 50);
-}
-
-export function toggleMute() {
-  muted = !muted;
-  if (master) master.gain.value = muted ? 0 : 0.35;
-  return muted;
-}
-
-export function nadeThrow() {
-  noise(0.12, 0.10, 900);
-}
+export const sound = {
+  shot(kind = 'sidearm', distant = false) {
+    const scale = distant ? 0.42 : 1;
+    if (kind === 'longsight') {
+      noise(0.19, { gain: 0.4 * scale, cutoff: 1800, to: 180 });
+      tone(105, 0.2, { type: 'square', gain: 0.16 * scale, to: 42 });
+    } else if (kind === 'coil') {
+      noise(0.065, { gain: 0.24 * scale, cutoff: 2400, to: 650 });
+      tone(190, 0.055, { type: 'square', gain: 0.09 * scale, to: 95 });
+    } else {
+      noise(0.09, { gain: 0.28 * scale, cutoff: 2100, to: 500 });
+      tone(240, 0.075, { type: 'triangle', gain: 0.1 * scale, to: 100 });
+    }
+  },
+  hit(kill = false) {
+    tone(kill ? 940 : 680, 0.055, { type: 'square', gain: 0.08 });
+    if (kill) tone(1320, 0.1, { type: 'triangle', gain: 0.07, delay: 0.045 });
+  },
+  hurt() {
+    noise(0.12, { gain: 0.12, cutoff: 500 });
+    tone(95, 0.16, { type: 'sawtooth', gain: 0.08, to: 58 });
+  },
+  reload() {
+    noise(0.035, { gain: 0.06, cutoff: 3300 });
+    tone(360, 0.04, { type: 'square', gain: 0.035, delay: 0.11 });
+  },
+  step() {
+    noise(0.045, { gain: 0.035, cutoff: 520 });
+  },
+  throwPot() {
+    noise(0.1, { gain: 0.07, cutoff: 900 });
+    tone(180, 0.08, { type: 'triangle', gain: 0.04, to: 120 });
+  },
+  explosion() {
+    noise(0.72, { gain: 0.55, cutoff: 950, to: 90 });
+    tone(78, 0.65, { type: 'sine', gain: 0.34, to: 28 });
+  },
+  plant() {
+    tone(420, 0.09, { type: 'square', gain: 0.09 });
+    tone(630, 0.09, { type: 'square', gain: 0.09, delay: 0.11 });
+    tone(840, 0.16, { type: 'square', gain: 0.08, delay: 0.22 });
+  },
+  beep(urgent = false) {
+    tone(urgent ? 1450 : 1080, 0.045, { type: 'square', gain: 0.055 });
+  },
+  defused() {
+    [740, 590, 440].forEach((frequency, i) => tone(frequency, 0.15, { type: 'triangle', gain: 0.08, delay: i * 0.1 }));
+  },
+  round(won) {
+    const notes = won ? [392, 523, 659, 784] : [392, 330, 262];
+    notes.forEach((frequency, i) => tone(frequency, 0.18, { type: 'triangle', gain: 0.08, delay: i * 0.105 }));
+  },
+  purchase(ok = true) {
+    tone(ok ? 920 : 150, 0.055, { type: 'square', gain: 0.06 });
+    if (ok) tone(1240, 0.07, { type: 'triangle', gain: 0.05, delay: 0.055 });
+  },
+  toggleMute() {
+    muted = !muted;
+    if (bus) bus.gain.setTargetAtTime(muted ? 0 : masterLevel, audio.currentTime, 0.015);
+    return muted;
+  },
+};

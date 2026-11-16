@@ -1,251 +1,261 @@
-// The arsenal: three hitscan weapons sharing one view-model rig, one muzzle flash and
-// one heat model. Each weapon owns its own numbers; main.js owns the ray and the damage.
-// Every weapon fires a fixed recoil PATTERN (not just a kick size): a climbing ladder of
-// pitch/yaw steps the muzzle traces while the trigger stays down, so each gun draws its
-// own shape on the wall — the rifle climbs and weaves, the pistol steps, the Longsight
-// slams once.
-//   1 EMBERETTE  pistol    — semi-auto, cheap and honest
-//   2 KILN-R     rifle     — full-auto workhorse, sprays wide when hot
-//   3 LONGSIGHT  marksman  — slow, near-perfect, hits like a kiln door (100 to the torso)
-// Heat climbs with every shot and bleeds off over time; both spread and the camera kick
-// grow with it, so short bursts beat a held trigger, and standing still beats running.
+// Three deliberately different weapons, each with a fixed recoil signature and a
+// heat-driven accuracy model. The arsenal owns ammunition and view models; main
+// owns the actual ray so walls and hitboxes are resolved in one place.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
-// [pitch, yaw] per consecutive shot; the ladder holds on its last step while the
-// trigger stays held. Yaw signs weave left-right — the rifle's signature.
-const PATTERN_PISTOL = [
-  [0.015, 0.003], [0.016, -0.004], [0.017, 0.005], [0.018, -0.005],
-  [0.019, 0.006], [0.02, -0.006], [0.02, 0.007], [0.021, -0.007],
-];
-const PATTERN_RIFLE = [
-  [0.009, 0.001], [0.011, -0.002], [0.012, 0.003], [0.013, -0.003],
-  [0.014, 0.004], [0.015, -0.004], [0.016, 0.005], [0.016, -0.005],
-  [0.017, 0.006], [0.018, -0.006], [0.018, 0.007], [0.019, -0.007],
-  [0.02, 0.007], [0.02, -0.008], [0.021, 0.008], [0.021, -0.008],
-];
-const PATTERN_MARKSMAN = [[0.05, 0.006]];
-// The COIL-9's ladder barely climbs — it shakes side to side like the hose it is.
-const PATTERN_SMG = [
-  [0.007, 0.004], [0.008, -0.005], [0.008, 0.005], [0.009, -0.006],
-  [0.009, 0.006], [0.01, -0.006], [0.01, 0.007], [0.011, -0.007],
-];
-
-const MOVE_REFERENCE = 5.2;
-const HEAT_PER_ROUND = 0.16;
-const HEAT_COOL_RATE = 1.9;
-const MUZZLE_TIME = 0.06;
-const SWAP_TIME = 0.35;
-
-const WEAPONS = [
+export const WEAPONS = Object.freeze([
   {
-    key: 'pistol', name: 'EMBERETTE',
-    damage: 34, magSize: 12, reserve: 36, fireGap: 0.22, reloadTime: 1.4,
-    spreadStill: 0.0018, spreadMoving: 0.02, spreadHeat: 0.012,
-    kick: 0.05, recoilPitch: 0.014, automatic: false, pattern: PATTERN_PISTOL,
-    model: { receiver: [0.06, 0.09, 0.24], barrel: [0.035, 0.035, 0.18], barrelZ: -0.2, grip: true },
+    key: 'sidearm', name: 'EMBERETTE', className: 'SERVICE SIDEARM', price: 0,
+    damage: 34, head: 2.65, magazine: 12, reserve: 48, gap: 0.23, reload: 1.35,
+    automatic: false, spread: 0.0014, moveSpread: 0.018, heatSpread: 0.013,
+    pattern: [[0.015, 0.002], [0.016, -0.003], [0.018, 0.004], [0.019, -0.004], [0.021, 0.005], [0.022, -0.005]],
   },
   {
-    key: 'rifle', name: 'KILN-R',
-    damage: 34, magSize: 30, reserve: 90, fireGap: 0.096, reloadTime: 1.9,
-    spreadStill: 0.0022, spreadMoving: 0.028, spreadHeat: 0.03,
-    kick: 0.055, recoilPitch: 0.011, automatic: true, pattern: PATTERN_RIFLE,
-    model: { receiver: [0.09, 0.1, 0.42], barrel: [0.045, 0.045, 0.4], barrelZ: -0.38, stock: true },
+    key: 'coil', name: 'COIL-9', className: '9MM INDUCTION SMG', price: 650,
+    damage: 24, head: 2.35, magazine: 30, reserve: 120, gap: 0.072, reload: 1.75,
+    automatic: true, spread: 0.0025, moveSpread: 0.025, heatSpread: 0.021,
+    pattern: [[0.007, 0.003], [0.008, -0.004], [0.009, 0.005], [0.01, -0.006], [0.011, 0.006], [0.012, -0.007], [0.013, 0.007], [0.014, -0.007], [0.015, 0.006], [0.016, -0.005]],
   },
   {
-    key: 'marksman', name: 'LONGSIGHT',
-    damage: 100, magSize: 5, reserve: 15, fireGap: 0.95, reloadTime: 2.6,
-    spreadStill: 0.0006, spreadMoving: 0.05, spreadHeat: 0.004,
-    kick: 0.12, recoilPitch: 0.05, automatic: false, pattern: PATTERN_MARKSMAN,
-    model: { receiver: [0.07, 0.11, 0.6], barrel: [0.04, 0.04, 0.62], barrelZ: -0.58, scope: true },
+    key: 'longsight', name: 'LONGSIGHT', className: 'SCOPED KILN DMR', price: 1350,
+    damage: 92, head: 2.1, magazine: 5, reserve: 20, gap: 0.9, reload: 2.45,
+    automatic: false, spread: 0.0045, moveSpread: 0.048, heatSpread: 0.004,
+    pattern: [[0.052, 0.004], [0.047, -0.006], [0.055, 0.005]],
   },
-  {
-    key: 'smg', name: 'COIL-9',
-    damage: 22, magSize: 32, reserve: 128, fireGap: 0.068, reloadTime: 1.65,
-    spreadStill: 0.0034, spreadMoving: 0.036, spreadHeat: 0.024,
-    kick: 0.038, recoilPitch: 0.008, automatic: true, pattern: PATTERN_SMG,
-    model: { receiver: [0.07, 0.1, 0.3], barrel: [0.04, 0.04, 0.22], barrelZ: -0.24, stock: true, grip: true },
-  },
-];
+]);
 
 export function createWeapon(camera) {
-  const gripMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.hairline), roughness: 0.7, metalness: 0.2 });
-  const bodyMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.ink), roughness: 0.5, metalness: 0.35 });
-  const accentMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.accent), roughness: 0.45, metalness: 0.15 });
+  const state = {
+    index: 0,
+    unlocked: [true, false, false],
+    cooldown: 0,
+    reloadLeft: 0,
+    drawLeft: 0,
+    heat: 0,
+    pattern: 0,
+    flashLeft: 0,
+    time: 0,
+    recoil: 0,
+  };
+  const ammo = WEAPONS.map((weapon) => ({ mag: weapon.magazine, reserve: weapon.reserve }));
+  const rig = new THREE.Group();
+  rig.position.set(0.31, -0.27, -0.59);
+  rig.scale.setScalar(0.84);
+  camera.add(rig);
 
-  const flash = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.24, 0.24),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(PALETTE.accent), transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide }),
-  );
-  flash.position.set(0.24, -0.18, -0.95);
+  const gunmetal = new THREE.MeshStandardMaterial({ color: '#252a31', metalness: 0.72, roughness: 0.33 });
+  const steel = new THREE.MeshStandardMaterial({ color: '#59616a', metalness: 0.65, roughness: 0.4 });
+  const grip = new THREE.MeshStandardMaterial({ color: '#171a20', roughness: 0.9 });
+  const ember = new THREE.MeshStandardMaterial({ color: PALETTE.ember, emissive: PALETTE.ember, emissiveIntensity: 0.65 });
+  const glove = new THREE.MeshStandardMaterial({ color: '#3d4a4b', roughness: 0.95 });
+
+  function part(group, size, position, material, rotation = null) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
+    mesh.position.set(...position);
+    if (rotation) mesh.rotation.set(...rotation);
+    group.add(mesh);
+    return mesh;
+  }
+
+  function buildModel(index) {
+    const group = new THREE.Group();
+    if (index === 0) {
+      part(group, [0.12, 0.13, 0.39], [0, 0, -0.05], gunmetal);
+      part(group, [0.105, 0.055, 0.34], [0, 0.083, -0.08], steel);
+      part(group, [0.095, 0.25, 0.12], [0, -0.16, 0.07], grip, [-0.2, 0, 0]);
+      part(group, [0.025, 0.035, 0.025], [0, 0.126, -0.22], ember);
+      part(group, [0.038, 0.038, 0.18], [0, 0.015, -0.32], gunmetal);
+    } else if (index === 1) {
+      part(group, [0.14, 0.18, 0.55], [0, 0, -0.14], gunmetal);
+      part(group, [0.11, 0.29, 0.12], [0, -0.19, -0.02], grip, [-0.13, 0, 0]);
+      part(group, [0.12, 0.22, 0.15], [0, -0.16, -0.3], grip);
+      part(group, [0.11, 0.11, 0.32], [0, -0.025, 0.27], grip);
+      for (let i = 0; i < 4; i += 1) {
+        const coil = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.012, 5, 12), ember);
+        coil.position.set(0, 0.025, -0.28 - i * 0.065);
+        group.add(coil);
+      }
+      part(group, [0.045, 0.045, 0.3], [0, 0.02, -0.54], gunmetal);
+      part(group, [0.035, 0.09, 0.05], [0, 0.135, -0.29], steel);
+    } else {
+      part(group, [0.13, 0.17, 0.78], [0, 0, -0.24], gunmetal);
+      part(group, [0.115, 0.15, 0.35], [0, -0.025, 0.35], grip);
+      part(group, [0.1, 0.29, 0.13], [0, -0.18, 0.04], grip, [-0.14, 0, 0]);
+      part(group, [0.042, 0.042, 0.66], [0, 0.025, -0.92], steel);
+      const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.39, 12), gunmetal);
+      scope.rotation.x = Math.PI / 2;
+      scope.position.set(0, 0.17, -0.2);
+      group.add(scope);
+      const lens = new THREE.Mesh(new THREE.CircleGeometry(0.052, 16), ember);
+      lens.position.set(0, 0.17, -0.401);
+      lens.rotation.y = Math.PI;
+      group.add(lens);
+      part(group, [0.04, 0.11, 0.04], [0, 0.09, -0.11], steel);
+      part(group, [0.04, 0.11, 0.04], [0, 0.09, -0.31], steel);
+    }
+    // A gloved support hand anchors the model in first person instead of leaving
+    // the impression of a floating box gun.
+    part(group, [0.12, 0.13, 0.19], [-0.09, -0.13, -0.23], glove, [0.2, 0.15, -0.3]);
+    group.visible = false;
+    rig.add(group);
+    return group;
+  }
+
+  const models = WEAPONS.map((_, index) => buildModel(index));
+  const flash = new THREE.Group();
+  const flashMaterial = new THREE.MeshBasicMaterial({
+    color: PALETTE.ember, transparent: true, opacity: 0.72, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  for (const rotation of [0, Math.PI / 2]) {
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.095, 0.21), flashMaterial);
+    plane.rotation.z = rotation;
+    flash.add(plane);
+  }
+  flash.position.set(0, 0.02, -0.83);
   flash.visible = false;
-  camera.add(flash);
-
-  const flashLight = new THREE.PointLight(new THREE.Color(PALETTE.accent), 0, 5);
-  flashLight.position.set(0.24, -0.16, -0.6);
+  rig.add(flash);
+  const flashLight = new THREE.PointLight(PALETTE.ember, 0, 4);
+  flashLight.position.set(0.2, -0.1, -0.8);
   camera.add(flashLight);
 
-  // One model group per weapon; only the equipped one is visible.
-  const models = WEAPONS.map((spec) => {
-    const model = new THREE.Group();
-    const [rw, rh, rd] = spec.model.receiver;
-    const [bw, bh, bd] = spec.model.barrel;
-    model.add(new THREE.Mesh(new THREE.BoxGeometry(rw, rh, rd), bodyMat));
-    const barrel = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), gripMat);
-    barrel.position.set(0, rh * 0.25, spec.model.barrelZ);
-    model.add(barrel);
-    if (spec.model.grip) {
-      const handle = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.14, 0.07), gripMat);
-      handle.position.set(0, -rh * 0.7, rd * 0.28);
-      handle.rotation.x = 0.25;
-      model.add(handle);
-    }
-    if (spec.model.stock) {
-      const stock = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.08, 0.22), gripMat);
-      stock.position.set(0, -0.02, rd * 0.72);
-      model.add(stock);
-    }
-    if (spec.model.scope) {
-      const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.2, 10), accentMat);
-      scope.rotation.x = Math.PI / 2;
-      scope.position.set(0, rh * 0.75, -0.05);
-      model.add(scope);
-    }
-    model.position.set(0.24, -0.2, -0.42);
-    model.visible = false;
-    camera.add(model);
-    return model;
-  });
-
-  // Per-weapon ammo survives switching; heat and cooldowns are shared across the rig.
-  const ammo = WEAPONS.map((w) => ({ mag: w.magSize, reserve: w.reserve }));
-  const state = { index: 1, cooldown: 0, reloadLeft: 0, flash: 0, kick: 0, heat: 0, swapLeft: 0, patternIndex: 0 };
-  // The pistol and the KILN-R are issued free; the Longsight and the COIL-9 are
-  // bought at the yard shop (economy.js) and land on your back the moment they are.
-  const unlocked = [true, true, false, false];
-
-  function spec() {
+  function current() {
     return WEAPONS[state.index];
   }
 
-  // Draw a weapon: reset transient timers and show only its model. swapLeft gates firing
-  // so the view-model is never invisible mid-draw.
-  function loadWeapon(index) {
+  function select(index, instant = false) {
+    if (!state.unlocked[index] || index === state.index) return false;
     state.index = index;
+    state.reloadLeft = 0;
+    state.drawLeft = instant ? 0 : 0.3;
+    state.cooldown = Math.max(state.cooldown, state.drawLeft);
+    state.pattern = 0;
+    state.heat = Math.min(state.heat, 0.25);
+    for (let i = 0; i < models.length; i += 1) models[i].visible = i === index;
+    return true;
+  }
+
+  function unlock(index) {
+    if (state.unlocked[index]) return false;
+    state.unlocked[index] = true;
+    state.index = -1;
+    return select(index, true);
+  }
+
+  function resetMatch() {
+    state.unlocked = [true, false, false];
+    state.index = 0;
+    for (let i = 0; i < ammo.length; i += 1) {
+      ammo[i].mag = WEAPONS[i].magazine;
+      ammo[i].reserve = WEAPONS[i].reserve;
+    }
+    state.heat = 0;
+    state.cooldown = 0;
+    state.reloadLeft = 0;
+    state.drawLeft = 0;
+    for (let i = 0; i < models.length; i += 1) models[i].visible = i === 0;
+  }
+
+  function beginRound() {
     state.cooldown = 0;
     state.reloadLeft = 0;
     state.heat = 0;
-    state.swapLeft = SWAP_TIME;
-    state.patternIndex = 0;
-    for (let i = 0; i < models.length; i += 1) models[i].visible = i === index;
+    state.pattern = 0;
+    const box = ammo[state.index];
+    const needed = Math.min(current().magazine - box.mag, box.reserve);
+    box.mag += needed;
+    box.reserve -= needed;
   }
 
-  function step(dt) {
+  function step(dt, speed) {
+    state.time += dt;
     state.cooldown = Math.max(0, state.cooldown - dt);
-    state.flash = Math.max(0, state.flash - dt);
-    state.heat = Math.max(0, state.heat - HEAT_COOL_RATE * dt);
-    state.swapLeft = Math.max(0, state.swapLeft - dt);
-    state.kick += (0 - state.kick) * Math.min(1, dt * 14);
+    state.drawLeft = Math.max(0, state.drawLeft - dt);
+    state.flashLeft = Math.max(0, state.flashLeft - dt);
+    state.heat = Math.max(0, state.heat - dt * 0.78);
+    state.recoil = THREE.MathUtils.damp(state.recoil, 0, 18, dt);
+    flash.visible = state.flashLeft > 0;
+    flash.rotation.z += dt * 19;
+    flashLight.intensity = state.flashLeft > 0 ? 11 : 0;
 
-    const model = models[state.index];
-    model.position.z = -0.42 + state.kick;
-    model.rotation.x = state.kick * 2.2;
-    flash.visible = state.flash > 0;
-    flash.rotation.z = state.flash * 30;
-    flashLight.intensity = state.flash > 0 ? 18 : 0;
+    const moving = Math.min(1, speed / 4.85);
+    rig.position.x = 0.31 + Math.sin(state.time * 7.5) * 0.006 * moving;
+    rig.position.y = -0.27 + Math.abs(Math.cos(state.time * 7.5)) * 0.009 * moving - state.recoil * 0.13;
+    rig.position.z = -0.59 + state.recoil * 0.5;
+    rig.rotation.x = state.recoil * 0.8;
+    rig.rotation.z = Math.sin(state.time * 3.75) * 0.005 * moving;
+    if (state.drawLeft > 0) rig.rotation.x -= state.drawLeft * 1.6;
 
     if (state.reloadLeft > 0) {
-      state.reloadLeft = Math.max(0, state.reloadLeft - dt);
-      model.rotation.x = -0.55 * Math.min(1, (spec().reloadTime - state.reloadLeft) * 2);
-      if (state.reloadLeft === 0) {
+      const before = state.reloadLeft;
+      state.reloadLeft = Math.max(0, before - dt);
+      const progress = 1 - state.reloadLeft / current().reload;
+      rig.rotation.z += Math.sin(progress * Math.PI) * 0.65;
+      rig.position.y -= Math.sin(progress * Math.PI) * 0.17;
+      if (before > 0 && state.reloadLeft === 0) {
         const box = ammo[state.index];
-        const take = Math.min(spec().magSize - box.mag, box.reserve);
-        box.mag += take;
-        box.reserve -= take;
+        const amount = Math.min(current().magazine - box.mag, box.reserve);
+        box.mag += amount;
+        box.reserve -= amount;
+        state.pattern = 0;
       }
-    } else if (state.swapLeft > 0) {
-      model.rotation.x = -0.35 * Math.min(1, state.swapLeft * 4);
     }
   }
 
-  // Cold start: show the rifle with no draw animation, so ?shot= frames are stable.
-  loadWeapon(state.index);
-  state.swapLeft = 0;
-
+  models[0].visible = true;
   return {
     state,
     ammo,
+    current,
     step,
-    name() {
-      return spec().name;
-    },
-    damage() {
-      return spec().damage;
-    },
-    automatic() {
-      return spec().automatic;
-    },
-    recoilPitch() {
-      return spec().recoilPitch;
-    },
-    switchTo(index) {
-      if (index === state.index || !unlocked[index] || state.reloadLeft > 0 || state.swapLeft > 0) return;
-      loadWeapon(index);
-    },
-    unlocked,
-    count() {
-      return WEAPONS.length;
-    },
-    // A shop purchase: flag the gun owned and put it in your hands.
-    unlock(index) {
-      if (index < 0 || index >= WEAPONS.length || unlocked[index]) return false;
-      unlocked[index] = true;
-      loadWeapon(index);
-      return true;
-    },
-    // Scoped aim hides the view-model: the Longsight's world is the scope overlay.
-    setViewVisible(v) {
-      models[state.index].visible = v;
-    },
-    ready() {
-      const box = ammo[state.index];
-      return box.mag > 0 && state.cooldown === 0 && state.reloadLeft === 0 && state.swapLeft === 0;
-    },
-    pullTrigger() {
-      state.cooldown = spec().fireGap;
-      state.flash = MUZZLE_TIME;
-      state.kick = spec().kick;
-      state.heat = Math.min(1.6, state.heat + HEAT_PER_ROUND);
-      state.patternIndex += 1;
-    },
-    // The recoil step for the shot that just left: the weapon's pattern ladder,
-    // scaled by a little seeded jitter. main.js feeds this to player.recoil.
-    recoilKick(rng) {
-      const ladder = spec().pattern;
-      const step = ladder[Math.min(state.patternIndex - 1, ladder.length - 1)];
-      return [step[0] * (0.85 + rng() * 0.3), step[1] * (0.7 + rng() * 0.6)];
-    },
-    takeRound() {
-      const box = ammo[state.index];
-      if (box.mag <= 0) return false;
-      box.mag -= 1;
-      return true;
+    select,
+    unlock,
+    resetMatch,
+    beginRound,
+    name: () => current().name,
+    automatic: () => current().automatic,
+    ready: () => state.cooldown <= 0 && state.reloadLeft <= 0 && state.drawLeft <= 0 && ammo[state.index].mag > 0,
+    fire(rng) {
+      if (ammo[state.index].mag <= 0) return null;
+      ammo[state.index].mag -= 1;
+      state.cooldown = current().gap;
+      state.flashLeft = 0.055;
+      state.recoil = 0.12;
+      state.heat = Math.min(1.35, state.heat + (state.index === 1 ? 0.12 : 0.2));
+      const pattern = current().pattern;
+      const kick = pattern[Math.min(state.pattern, pattern.length - 1)];
+      state.pattern += 1;
+      return [kick[0] * (0.92 + rng() * 0.16), kick[1] * (0.9 + rng() * 0.2)];
     },
     reload() {
       const box = ammo[state.index];
-      if (state.reloadLeft > 0 || box.mag === spec().magSize || box.reserve === 0) return;
-      state.reloadLeft = spec().reloadTime;
+      if (state.reloadLeft > 0 || state.drawLeft > 0 || box.reserve <= 0 || box.mag >= current().magazine) return false;
+      state.reloadLeft = current().reload;
+      state.cooldown = current().reload;
+      return true;
     },
-    spread(speed) {
-      const s = spec();
-      return s.spreadStill + Math.min(1, speed / MOVE_REFERENCE) * s.spreadMoving + state.heat * s.spreadHeat;
+    spread(speed, scoped) {
+      const spec = current();
+      const base = scoped && state.index === 2 ? 0.00012 : spec.spread;
+      return base + Math.min(1, speed / 4.85) * spec.moveSpread + state.heat * spec.heatSpread;
     },
-    refill() {
-      for (let i = 0; i < WEAPONS.length; i += 1) {
-        ammo[i].mag = WEAPONS[i].magSize;
+    refillAmmo() {
+      for (let i = 0; i < ammo.length; i += 1) {
+        if (!state.unlocked[i]) continue;
+        ammo[i].mag = WEAPONS[i].magazine;
         ammo[i].reserve = WEAPONS[i].reserve;
       }
-      loadWeapon(state.index);
+    },
+    ammoFull() {
+      return ammo.every((box, index) => !state.unlocked[index]
+        || (box.mag === WEAPONS[index].magazine && box.reserve === WEAPONS[index].reserve));
+    },
+    setVisible(visible) {
+      rig.visible = visible;
+      flashLight.visible = visible;
+    },
+    muzzleWorld(target) {
+      return flash.getWorldPosition(target);
     },
   };
 }

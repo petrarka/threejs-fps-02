@@ -1,66 +1,64 @@
-// The match clock: buy time (freeze) -> live round -> intermission. First to eight
-// rounds takes the yard. Pure state — main.js owns the world and acts on the
-// transitions this module reports; deterministic shot modes bypass it entirely.
-export const FREEZE_SECONDS = 6;
-export const OVER_SECONDS = 3.2;
-export const ROUNDS_TO_WIN = 8;
-export const ROUND_SECONDS = 115; // the live round clock: stall it out and the round is lost
+// Match state machine. World mutation and presentation deliberately live elsewhere.
+import { ROUNDS_TO_WIN } from './config.js';
+
+export const BUY_SECONDS = 7;
+export const ROUND_SECONDS = 115;
+export const INTERMISSION_SECONDS = 4;
 
 export function createRounds() {
   const state = {
-    phase: 'idle', // idle | freeze | live | over
-    round: 1,
-    wins: 0,
-    losses: 0,
-    clock: 0,      // seconds left inside freeze/over
+    phase: 'idle',
+    number: 1,
+    crew: 0,
+    guards: 0,
+    clock: 0,
+    lastResult: '',
   };
 
-  function startMatch() {
-    state.round = 1;
-    state.wins = 0;
-    state.losses = 0;
-    state.phase = 'freeze';
-    state.clock = FREEZE_SECONDS;
+  function start() {
+    state.phase = 'buy';
+    state.number = 1;
+    state.crew = 0;
+    state.guards = 0;
+    state.clock = BUY_SECONDS;
+    state.lastResult = '';
   }
 
-  // Returns 'match' when this result decides the match, otherwise 'round'.
-  function endRound(result) {
-    if (result === 'win') state.wins += 1;
-    else state.losses += 1;
-    if (state.wins >= ROUNDS_TO_WIN || state.losses >= ROUNDS_TO_WIN) {
-      state.phase = 'idle';
+  function finish(crewWon, reason) {
+    if (!['live', 'buy'].includes(state.phase)) return 'ignored';
+    if (crewWon) state.crew += 1;
+    else state.guards += 1;
+    state.lastResult = reason;
+    if (state.crew >= ROUNDS_TO_WIN || state.guards >= ROUNDS_TO_WIN) {
+      state.phase = 'match';
+      state.clock = 0;
       return 'match';
     }
     state.phase = 'over';
-    state.clock = OVER_SECONDS;
+    state.clock = INTERMISSION_SECONDS;
     return 'round';
   }
 
-  // Counts down freeze/over/live. On a boundary returns the new phase ('live',
-  // 'freeze' for the next round, or 'timeout' when the live clock hits zero);
-  // null while the current phase still has time left.
-  function tick(dt) {
-    if (state.phase === 'live') {
-      state.clock -= dt;
-      if (state.clock <= 0) {
-        state.clock = 0;
-        return 'timeout';
-      }
-      return null;
-    }
-    if (state.phase !== 'freeze' && state.phase !== 'over') return null;
-    state.clock -= dt;
+  // A return value describes exactly one boundary crossed on this fixed step.
+  function tick(dt, chargeActive) {
+    if (!['buy', 'live', 'over'].includes(state.phase)) return null;
+    // A planted Ember owns the endgame even after the ordinary round clock expires.
+    if (state.phase === 'live' && chargeActive) return null;
+    state.clock = Math.max(0, state.clock - dt);
     if (state.clock > 0) return null;
-    if (state.phase === 'freeze') {
+    if (state.phase === 'buy') {
       state.phase = 'live';
       state.clock = ROUND_SECONDS;
       return 'live';
     }
-    state.round += 1;
-    state.phase = 'freeze';
-    state.clock = FREEZE_SECONDS;
-    return 'freeze';
+    if (state.phase === 'over') {
+      state.number += 1;
+      state.phase = 'buy';
+      state.clock = BUY_SECONDS;
+      return 'buy';
+    }
+    return 'timeout';
   }
 
-  return { state, startMatch, endRound, tick };
+  return { state, start, finish, tick };
 }

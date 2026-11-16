@@ -1,47 +1,39 @@
-// Hearing: how a noise reaches the guard crew. Gunfire, bursting firepots and the
-// crew's own traded rounds all emit at a radius; a guard inside it wakes and paths
-// to the spot. Walls muffle — a noise source behind brick only carries a fraction
-// as far, checked with a real eye-to-source raycast against the yard's shootables,
-// so fighting inside a kiln does not wake the whole yard.
+// Audible events are short-lived investigation orders, not magical target knowledge.
+// A real ray between source and ear determines how much of the sound survives masonry.
 import * as THREE from 'three';
-
-const AIM_HEIGHT = 1.35;
-const HEAR_DECAY = 7;        // seconds a noise stays worth investigating
-const MUFFLE_FACTOR = 0.45;  // a wall between source and ear eats over half the radius
 
 export function createHearing(world) {
   const ray = new THREE.Raycaster();
-  const eye = new THREE.Vector3();
-  const at = new THREE.Vector3();
-  const dir = new THREE.Vector3();
+  const origin = new THREE.Vector3();
+  const direction = new THREE.Vector3();
 
-  // Straight, unobstructed line from a guard's ear to the noise source?
-  function clearLine(item, x, z) {
-    eye.set(item.group.position.x, AIM_HEIGHT, item.group.position.z);
-    at.set(x, AIM_HEIGHT, z);
-    dir.subVectors(at, eye);
-    const dist = dir.length();
-    if (dist < 0.001) return true;
-    dir.normalize();
-    ray.set(eye, dir);
-    ray.far = dist;
-    const wall = ray.intersectObjects(world.shootables, false)[0];
-    return !wall || wall.distance > dist - 0.5;
+  function transmission(guard, x, z) {
+    const p = guard.group.position;
+    origin.set(p.x, 1.35, p.z);
+    direction.set(x - p.x, 0, z - p.z);
+    const distance = direction.length();
+    if (distance < 0.01) return 1;
+    direction.divideScalar(distance);
+    ray.set(origin, direction);
+    ray.far = distance;
+    const obstruction = ray.intersectObjects(world.solids, false)[0];
+    if (!obstruction || obstruction.distance >= distance - 0.35) return 1;
+    // Two close surfaces read as one wall; thick kiln cores damp even further.
+    return obstruction.object.userData.heavy ? 0.22 : 0.43;
   }
 
-  // Noise at (x, z) with a given radius wakes every guard who can genuinely hear it.
-  // `now` is the match clock; the alert stays worth investigating for HEAR_DECAY seconds.
-  function hear(items, x, z, radius, now) {
-    for (const item of items) {
-      if (!item.alive) continue;
-      const d = Math.hypot(item.group.position.x - x, item.group.position.z - z);
-      if (d > radius) continue;
-      if (d > radius * MUFFLE_FACTOR && !clearLine(item, x, z)) continue;
-      item.alertX = x;
-      item.alertZ = z;
-      item.alertUntil = now + HEAR_DECAY;
+  function emit(guards, x, z, loudness, time, kind = 'shot') {
+    for (const guard of guards) {
+      if (!guard.alive) continue;
+      const p = guard.group.position;
+      const distance = Math.hypot(p.x - x, p.z - z);
+      const reach = loudness * transmission(guard, x, z);
+      if (distance > reach) continue;
+      guard.noise.set(x, 0, z);
+      guard.noiseUntil = time + (kind === 'blast' ? 10 : 7);
+      guard.noisePriority = kind === 'blast' ? 2 : 1;
     }
   }
 
-  return { hear, HEAR_DECAY, MUFFLE_FACTOR };
+  return { emit, transmission };
 }

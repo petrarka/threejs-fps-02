@@ -1,163 +1,159 @@
-// The objective: one Ember charge and two glowing sites. Carry it, hold E on a site pad to
-// plant (3 s), then a 40 s fuse burns down with a lamp that blinks faster as it runs out.
-// Hold E beside the planted charge to defuse (5 s) — the wardens converge and try the same,
-// so a plant has to be defended, not just dropped. No assets: two boxes and a light.
+// The Ember charge: a three-second plant, a forty-second fuse and competing
+// defuse channels. Its tiny display is a live canvas texture, just like the yard art.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
+import { SITES } from './config.js';
 
-const FUSE_SECONDS = 40;
-const PLANT_SECONDS = 3;
-const DEFUSE_SECONDS = 5;
-const BOT_DEFUSE_SECONDS = 6;
-const SITE_RADIUS = 3.4;
-const DEFUSE_RANGE = 1.9;
-const BOT_RANGE = 1.5;
-
-const SITES = [
-  { key: 'A', x: -15, z: -9 },
-  { key: 'B', x: 15, z: -9 },
-];
+export const PLANT_TIME = 3;
+export const DEFUSE_TIME = 5;
+export const BOT_DEFUSE_TIME = 6.5;
+export const FUSE_TIME = 40;
 
 export function createBomb(scene) {
   const group = new THREE.Group();
-
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(0.34, 0.2, 0.26),
-    new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.ink), roughness: 0.5, metalness: 0.3 }),
-  );
-  body.position.y = 0.1;
+  const caseMaterial = new THREE.MeshStandardMaterial({ color: '#292d32', roughness: 0.55, metalness: 0.45 });
+  const trimMaterial = new THREE.MeshStandardMaterial({ color: PALETTE.ember, emissive: PALETTE.ember, emissiveIntensity: 0.8 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.22, 0.36), caseMaterial);
   body.castShadow = true;
-
-  const cell = new THREE.Mesh(
-    new THREE.BoxGeometry(0.2, 0.06, 0.14),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(PALETTE.accent) }),
-  );
-  cell.position.y = 0.215;
-
-  const lamp = new THREE.PointLight(new THREE.Color(PALETTE.accent), 0, 8);
-  lamp.position.y = 0.5;
-
-  group.add(body, cell, lamp);
+  group.add(body);
+  for (const x of [-0.17, 0.17]) {
+    const cell = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.3, 8), trimMaterial);
+    cell.rotation.x = Math.PI / 2;
+    cell.position.set(x, 0.15, 0);
+    group.add(cell);
+  }
+  const displayCanvas = document.createElement('canvas');
+  displayCanvas.width = 256;
+  displayCanvas.height = 96;
+  const displayContext = displayCanvas.getContext('2d');
+  const displayTexture = new THREE.CanvasTexture(displayCanvas);
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.23, 0.086), new THREE.MeshBasicMaterial({ map: displayTexture }));
+  screen.rotation.x = -Math.PI / 2;
+  screen.position.set(0, 0.121, 0.03);
+  group.add(screen);
+  const light = new THREE.PointLight(PALETTE.ember, 0, 7);
+  light.position.y = 0.55;
+  group.add(light);
   group.visible = false;
   scene.add(group);
 
   const state = {
-    phase: 'carry',      // carry | plant | planted | done
-    site: null,          // 'A' | 'B' once planted
-    timeLeft: 0,
-    progress: 0,         // 0..1 of the current hold action (plant or defuse)
-    defuseByBot: 0,      // seconds a warden has spent crouched at the charge
-    blinkOn: false,
+    phase: 'carry',
+    site: null,
+    fuse: FUSE_TIME,
+    plantProgress: 0,
+    defuseProgress: 0,
+    guardDefuse: 0,
+    blink: false,
     blinkClock: 0,
-    exploded: false,
-    defused: false,
+    lastSecond: -1,
   };
 
-  function siteAt(pos) {
-    for (const site of SITES) {
-      if (Math.hypot(pos.x - site.x, pos.z - site.z) <= SITE_RADIUS) return site;
-    }
-    return null;
+  function paintDisplay(text, hot = false) {
+    displayContext.fillStyle = '#150e0b';
+    displayContext.fillRect(0, 0, 256, 96);
+    displayContext.strokeStyle = hot ? '#ff8a3d' : '#743d31';
+    displayContext.lineWidth = 5;
+    displayContext.strokeRect(3, 3, 250, 90);
+    displayContext.fillStyle = hot ? '#ffb070' : '#b77c58';
+    displayContext.font = '700 53px ui-monospace, monospace';
+    displayContext.textAlign = 'center';
+    displayContext.textBaseline = 'middle';
+    displayContext.fillText(text, 128, 52);
+    displayTexture.needsUpdate = true;
+  }
+  paintDisplay('EMBER');
+
+  function siteAt(position) {
+    return SITES.find((site) => Math.hypot(position.x - site.x, position.z - site.z) <= site.radius) || null;
   }
 
   function reset() {
     state.phase = 'carry';
     state.site = null;
-    state.timeLeft = 0;
-    state.progress = 0;
-    state.defuseByBot = 0;
-    state.blinkOn = false;
+    state.fuse = FUSE_TIME;
+    state.plantProgress = 0;
+    state.defuseProgress = 0;
+    state.guardDefuse = 0;
+    state.blink = false;
     state.blinkClock = 0;
-    state.exploded = false;
-    state.defused = false;
+    state.lastSecond = -1;
     group.visible = false;
-    group.scale.set(1, 1, 1);
-    lamp.intensity = 0;
-    cell.material.color.set(PALETTE.accent);
+    group.scale.setScalar(1);
+    light.intensity = 0;
+    paintDisplay('EMBER');
   }
 
-  // Returns 'planted' | 'exploded' | 'defused' | null. botPositions is a reused, read-only
-  // array of living wardens' positions.
-  function step(dt, playerPos, useHeld, botPositions) {
-    if (state.exploded || state.defused) return null;
-
-    if (state.phase === 'carry' || state.phase === 'plant') {
-      const site = siteAt(playerPos);
+  function step(dt, actorPosition, useHeld, guardPositions) {
+    if (state.phase === 'done') return null;
+    if (state.phase === 'carry' || state.phase === 'planting') {
+      const site = actorPosition ? siteAt(actorPosition) : null;
       if (site && useHeld) {
-        state.phase = 'plant';
-        state.progress += dt / PLANT_SECONDS;
-        if (state.progress >= 1) {
-          state.site = site.key;
+        state.phase = 'planting';
+        state.plantProgress = Math.min(1, state.plantProgress + dt / PLANT_TIME);
+        if (state.plantProgress >= 1) {
           state.phase = 'planted';
-          state.timeLeft = FUSE_SECONDS;
-          state.progress = 0;
-          group.position.set(site.x, 0.19, site.z); // resting on top of the glowing pad
+          state.site = site.id;
+          state.fuse = FUSE_TIME;
+          state.plantProgress = 0;
+          group.position.set(site.x, 0.15, site.z);
           group.visible = true;
           return 'planted';
         }
       } else {
         state.phase = 'carry';
-        state.progress = Math.max(0, state.progress - dt / PLANT_SECONDS);
+        state.plantProgress = Math.max(0, state.plantProgress - dt * 0.5);
       }
       return null;
     }
 
-    // planted: fuse countdown, blinking lamp, and the defuse race.
-    state.timeLeft -= dt;
-    const frac = Math.max(0, state.timeLeft / FUSE_SECONDS);
+    state.fuse = Math.max(0, state.fuse - dt);
+    const fraction = state.fuse / FUSE_TIME;
     state.blinkClock += dt;
-    if (state.blinkClock >= 0.18 + 2.2 * frac) {
+    if (state.blinkClock >= 0.12 + 0.85 * fraction) {
       state.blinkClock = 0;
-      state.blinkOn = !state.blinkOn;
+      state.blink = !state.blink;
     }
-    lamp.intensity = state.blinkOn ? 4 + 12 * (1 - frac) : 0;
-    cell.material.color.set(state.blinkOn ? PALETTE.accent : PALETTE.brick);
+    light.intensity = state.blink ? 8 + (1 - fraction) * 13 : 0.4;
+    const second = Math.ceil(state.fuse * 10);
+    if (second !== state.lastSecond) {
+      state.lastSecond = second;
+      paintDisplay(state.fuse.toFixed(1).padStart(4, '0'), state.fuse < 10);
+    }
 
-    const nearBomb = Math.hypot(playerPos.x - group.position.x, playerPos.z - group.position.z) <= DEFUSE_RANGE;
-    if (nearBomb && useHeld) {
-      state.progress += dt / DEFUSE_SECONDS;
-      if (state.progress >= 1) {
-        state.defused = true;
+    const playerNear = actorPosition && Math.hypot(actorPosition.x - group.position.x, actorPosition.z - group.position.z) <= 1.85;
+    if (playerNear && useHeld) {
+      state.defuseProgress = Math.min(1, state.defuseProgress + dt / DEFUSE_TIME);
+      if (state.defuseProgress >= 1) {
         state.phase = 'done';
+        light.intensity = 0;
         return 'defused';
       }
     } else {
-      state.progress = Math.max(0, state.progress - dt / DEFUSE_SECONDS);
+      state.defuseProgress = Math.max(0, state.defuseProgress - dt * 0.35);
     }
 
-    let botClose = false;
-    for (let index = 0; index < botPositions.length; index += 1) {
-      const p = botPositions[index];
-      if (p && Math.hypot(p.x - group.position.x, p.z - group.position.z) <= BOT_RANGE) {
-        botClose = true;
-        break;
-      }
-    }
-    if (botClose) {
-      state.defuseByBot += dt;
-      if (state.defuseByBot >= BOT_DEFUSE_SECONDS) {
-        state.defused = true;
-        state.phase = 'done';
-        return 'defused';
-      }
-    } else {
-      state.defuseByBot = Math.max(0, state.defuseByBot - dt);
-    }
-
-    if (state.timeLeft <= 0) {
-      state.exploded = true;
+    const guardNear = guardPositions.some((p) => Math.hypot(p.x - group.position.x, p.z - group.position.z) <= 1.5);
+    state.guardDefuse = guardNear ? state.guardDefuse + dt : Math.max(0, state.guardDefuse - dt * 0.5);
+    if (state.guardDefuse >= BOT_DEFUSE_TIME) {
       state.phase = 'done';
-      lamp.intensity = 60;
-      group.scale.set(3, 3, 3);
+      light.intensity = 0;
+      return 'defused';
+    }
+    if (state.fuse <= 0) {
+      state.phase = 'done';
+      light.intensity = 65;
       return 'exploded';
     }
     return null;
   }
 
-  function hudText() {
-    if (state.phase !== 'planted') return null;
-    return `SITE ${state.site} · ${Math.max(0, state.timeLeft).toFixed(1)}`;
-  }
-
-  return { state, position: group.position, step, reset, hudText, siteAt };
+  return {
+    state,
+    position: group.position,
+    siteAt,
+    reset,
+    step,
+    hudText: () => state.phase === 'planted' ? `EMBER ${state.site}  ·  ${state.fuse.toFixed(1)}` : null,
+  };
 }
